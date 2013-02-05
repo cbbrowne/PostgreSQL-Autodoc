@@ -1,6 +1,6 @@
-# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.7 2003/05/12 19:31:20 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.9 2003/08/02 00:49:51 rtaylor02 Exp $
 
-TEMPLATES = dia.tmpl dot.tmpl html.tmpl sgml.tmpl
+TEMPLATES = dia.tmpl dot.tmpl html.tmpl xml.tmpl
 BINARY = postgresql_autodoc
 CONFIGFILE = config.mk
 
@@ -50,8 +50,8 @@ install: all $(ALWAYS_DEPEND)
 clean: $(ALWAYS_DEPEND)
 	$(RM) $(BINARY)
 
-.PHONY: distribution-clean
-distribution-clean: clean
+.PHONY: distribution-clean distclean
+distribution-clean distclean: clean
 	$(RM) $(CONFIGFILE) config.log config.status
 	$(RM) -r autom4te.cache
 	$(RM) $(patsubst %.tmpl,*.%,$(wildcard *.tmpl))
@@ -75,6 +75,7 @@ release: distribution-clean configure $(RELEASE_FILES)
 		echo "-------------------------------------------"; \
 		false; \
 	fi
+	cvs2cl
 	-cvs commit
 	cd ../ && tar -czvf postgresql_autodoc-${VERSION}.tar.gz $(REAL_RELEASE_FILES)
 

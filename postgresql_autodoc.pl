@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.89 2003/05/14 20:17:42 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.103 2003/08/02 00:48:06 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.10
+# Postgres Auto-Doc Version 1.11
 
 # License
 # -------
@@ -84,6 +84,8 @@ my $fileisset = 0;
 
 my $only_schema;
 
+my $statistics = 0;
+
 # Fetch base and dirnames.  Useful for Usage()
 my $basename = $0;
 my $dirname = $0;
@@ -141,6 +143,12 @@ for ( my $i = 0 ; $i <= $#ARGV ; $i++ ) {
 		# User has requested a single schema dump and provided a pattern
 		/^(-s|--schema)$/ && do {
 			$only_schema = $ARGV[++$i];
+			last;
+		};
+
+		# Check to see if Statistics have been requested
+		/^--statistics$/ && do {
+			$statistics = 1;
 			last;
 		};
 
@@ -228,6 +236,7 @@ my $sql_FunctionArg;
 my $sql_Primary_Keys;
 my $sql_Schema;
 my $sql_Tables;
+my $sql_Table_Statistics;
 
 # Pull out a list of tables, views and special structures. 
 if ( $pgversion >= 70300 ) {
@@ -442,6 +451,27 @@ else {
 	};
 }
 
+if ($statistics == 1)
+{
+	if ($pgversion <= 70300) {
+		triggerError("Table statistics supported on PostgreSQL 7.4 and later.\nRemove --statistics flag and try again.");
+	}
+
+	$sql_Table_Statistics = qq{
+		SELECT table_len
+		     , tuple_count
+		     , tuple_len
+		     , CAST(tuple_percent AS numeric(20,2)) AS tuple_percent
+		     , dead_tuple_count
+		     , dead_tuple_len
+		     , CAST(dead_tuple_percent AS numeric(20,2)) AS dead_tuple_percent
+		     , CAST(free_space AS numeric(20,2)) AS free_space
+		     , CAST(free_percent AS numeric(20,2)) AS free_percent
+		  FROM pgstattuple(CAST(? AS oid));
+	};
+}
+
+
 # Fetch the list of PRIMARY and UNIQUE keys
 if ($pgversion >= 70300)
 {
@@ -616,14 +646,14 @@ else {
 }
 
 # Fetch the description of the database
-if ( $pgversion >= 70300 ) {
+if ($pgversion >= 70300) {
 	$sql_Database = qq{
 	SELECT pg_catalog.obj_description(oid, 'pg_database') as comment
 	  FROM pg_catalog.pg_database
 	 WHERE datname = '$database';
 	};
 }
-elsif ($pgversion == 70200 ) {
+elsif ($pgversion == 70200) {
 	$sql_Database = qq{
 	SELECT obj_description(oid, 'pg_database') as comment
 	  FROM pg_database
@@ -645,6 +675,7 @@ my $sth_FunctionArg		= $dbh->prepare($sql_FunctionArg);
 my $sth_Primary_Keys	= $dbh->prepare($sql_Primary_Keys);
 my $sth_Schema			= $dbh->prepare($sql_Schema);
 my $sth_Tables			= $dbh->prepare($sql_Tables);
+my $sth_Table_Statistics = $dbh->prepare($sql_Table_Statistics);
 
 my %structure;
 my %struct;
@@ -714,6 +745,20 @@ while ( my $tables = $sth_Tables->fetchrow_hashref ) {
 				$structure{$group}{$relname}{'ACL'}{$user}{'TRIGGER'} = 1;
 			}
 		}
+	}
+
+	# Primitive Stats, but only if requested
+	if ($statistics == 1)
+	{
+		$sth_Table_Statistics->execute($reloid);
+
+		my $stats = $sth_Table_Statistics->fetchrow_hashref;
+
+		$structure{$group}{$relname}{'TABLELEN'} = $stats->{'table_len'};
+		$structure{$group}{$relname}{'TUPLECOUNT'} = $stats->{'tuple_count'};
+		$structure{$group}{$relname}{'TUPLELEN'} = $stats->{'tuple_len'};
+		$structure{$group}{$relname}{'DEADTUPLELEN'} = $stats->{'dead_tuple_len'};
+		$structure{$group}{$relname}{'FREELEN'} = $stats->{'free_space'};
 	}
 
 	# Store the relation type
@@ -993,6 +1038,8 @@ sub write_using_templates
 				} keys %{ $structure{$schema}{$table}{'COLUMN'} }
 			  )
 			{
+				my $inferrednotnull = 0;
+
 				# Have a shorter default for places that require it
 				my $shortdefault = $structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'};
 				$shortdefault =~ s/^(.{17}).{5,}(.{5})$/$1 ... $2/g;
@@ -1011,14 +1058,11 @@ sub write_using_templates
 							column_unique => $unq,
 							column_unique_colnum => $unqcol,
 							column_unique_keygroup => $unqgroup,
-							column_unique_dbk => docbook($unq),
-							column_unique_colnum_dbk => docbook($unqcol),
-							column_unique_keygroup_dbk => docbook($unqgroup),
 						};
 					} elsif ($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} eq 'PRIMARY KEY') {
+						$inferrednotnull = 1;
 						push @colconstraints, {
-							column_primary_key => 1,
-							column_null => $structure{$schema}{$table}{'COLUMN'}{$column}{'NULL'},
+							column_primary_key => 'PRIMARY KEY',
 						};
 					} elsif ($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} eq 'FOREIGN KEY') {
 						my $fksgmlid = sgml_safe_id(
@@ -1029,17 +1073,16 @@ sub write_using_templates
 
 						my $fkgroup = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'};
 						my $fktable = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKTABLE'};
-						my $fkcolumn = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FK-COL NAME'};
+						my $fkcol = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FK-COL NAME'};
 						my $fkschema = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKSCHEMA'};
 
 						push @colconstraints, {
-							column_fk => $fkcolumn,
-							column_fk_dbk => docbook($fkcolumn),
+							column_fk => 'FOREIGN KEY',
+							column_fk_colnum => $fkcol,
 							column_fk_keygroup => $fkgroup,
-							column_fk_keygroup_dbk => docbook($fkgroup),
-							column_fk_sgmlid => $fksgmlid,
 							column_fk_schema => $fkschema,
 							column_fk_schema_dbk => docbook($fkschema),
+							column_fk_sgmlid => $fksgmlid,
 							column_fk_table => $fktable,
 							column_fk_table_dbk => docbook($fktable),
 						};
@@ -1061,18 +1104,21 @@ sub write_using_templates
 					column_default_short => $shortdefault,
 					column_default_short_dbk => docbook($shortdefault),
 
-					column_description => $structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'},
-					column_description_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'}),
+					column_comment => $structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'},
+					column_comment_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'}),
 
-					column_null => $structure{$schema}{$table}{'COLUMN'}{$column}{'NULL'},
 					column_number => $structure{$schema}{$table}{'COLUMN'}{$column}{'ORDER'},
-					column_number_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'ORDER'}),
 
 					column_type => $structure{$schema}{$table}{'COLUMN'}{$column}{'TYPE'},
 					column_type_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'TYPE'}),
 
 					column_constraints => \@colconstraints,
 				};
+
+				if ($inferrednotnull == 0) {
+					$columns[-1]{"column_constraint_notnull"} =
+						$structure{$schema}{$table}{'COLUMN'}{$column}{'NULL'};
+				}
 			}
 
 			# Constraint List
@@ -1110,6 +1156,7 @@ sub write_using_templates
 							if (
 								$structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}{$con}{'TYPE'} eq 'FOREIGN KEY'
 								&& $structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}{$con}{'FKTABLE'} eq $table
+								&& $structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}{$con}{'FKSCHEMA'} eq $schema
 								&& $lastmatch ne "$fk_schema$fk_table"
 								)
 							{
@@ -1119,7 +1166,6 @@ sub write_using_templates
 															, $fk_table));
 								push @fk_schemas, {
 									fk_column_number => $structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'ORDER'},
-									fk_column_number_dbk => docbook($structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'ORDER'}),
 									fk_sgmlid => $fksgmlid,
 									fk_schema => $fk_schema,
 									fk_schema_dbk => docbook($fk_schema),
@@ -1165,21 +1211,34 @@ sub write_using_templates
 			}
 
 			# Increment and record the object ID
-			$tableids{$table} = ++$object_id;
+			$tableids{"$schema$table"} = ++$object_id;
 			my $viewdef = sql_prettyprint($structure{$schema}{$table}{'VIEW_DEF'});
 
 			push @tables, {
 				object_id => $object_id,
 				object_id_dbk => docbook($object_id),
+
 				schema => $schema,
 				schema_dbk => docbook($schema),
+
+				# Statistics
+				stats_enabled => $statistics,
+				stats_dead_bytes => useUnits($structure{$schema}{$table}{'DEADTUPLELEN'}),
+				stats_dead_bytes_dbk => docbook(useUnits($structure{$schema}{$table}{'DEADTUPLELEN'})),
+				stats_free_bytes => useUnits($structure{$schema}{$table}{'FREELEN'}),
+				stats_free_bytes_dbk => docbook(useUnits($structure{$schema}{$table}{'FREELEN'})),
+				stats_table_bytes => useUnits($structure{$schema}{$table}{'TABLELEN'}),
+				stats_table_bytes_dbk => docbook(useUnits($structure{$schema}{$table}{'TABLELEN'})),
+				stats_tuple_count => $structure{$schema}{$table}{'TUPLECOUNT'},
+				stats_tuple_count_dbk => docbook($structure{$schema}{$table}{'TUPLECOUNT'}),
+				stats_tuple_bytes => useUnits($structure{$schema}{$table}{'TUPLELEN'}),
+				stats_tuple_bytes_dbk => docbook(useUnits($structure{$schema}{$table}{'TUPLELEN'})),
+
 			  	table => $table,
 			  	table_dbk => docbook($table),
 				table_sgmlid => sgml_safe_id(join('.', $schema, $structure{$schema}{$table}{'TYPE'}, $table)),
-				table_description => $structure{$schema}{$table}{'DESCRIPTION'},
-				table_description_dbk => docbook($structure{$schema}{$table}{'DESCRIPTION'}),
-				type => $structure{$schema}{$table}{'TYPE'},
-				type_dbk => docbook($structure{$schema}{$table}{'TYPE'}),
+				table_comment => $structure{$schema}{$table}{'DESCRIPTION'},
+				table_comment_dbk => docbook($structure{$schema}{$table}{'DESCRIPTION'}),
 				view_definition => $viewdef,
 				view_definition_dbk => docbook($viewdef),
 				columns => \@columns,
@@ -1203,13 +1262,22 @@ sub write_using_templates
 				function_id => sgml_safe_id(join('.', $schema, 'function', $function)),
 				function_comment => $struct{'FUNCTION'}{$schema}{$function}{'COMMENT'},
 				function_comment_dbk => docbook($struct{'FUNCTION'}{$schema}{$function}{'COMMENT'}),
+				schema => $schema,
+				schema_dbk => docbook($schema),
 			};
+
+			# only have the count if there is more than 1 schema
+			if (scalar(keys %structure) > 1) {
+				$functions[-1]{"number_of_schemas"} = scalar(keys %structure);
+			}
 		}
 
 		push @schemas, {
 			schema => $schema,
 			schema_dbk => docbook($schema),
 			schema_sgmlid => sgml_safe_id($schema.".schema"),
+			schema_comment => $struct{'SCHEMA'}{$schema}{'COMMENT'},
+			schema_comment_dbk => docbook($struct{'SCHEMA'}{$schema}{'COMMENT'}),
 			functions => \@functions,
 			tables => \@tables,
 		};
@@ -1274,18 +1342,25 @@ sub write_using_templates
 							handle0_connection_dia => 6 + ($key_con * 2),
 							handle0_name => $table,
 							handle0_name_dbk => docbook($table),
-							handle0_to => $tableids{$table},
-							handle0_to_dbk => docbook($tableids{$table}),
+							handle0_schema => $schema,
+							handle0_to => $tableids{"$schema$table"},
+							handle0_to_dbk => docbook($tableids{"$schema$table"}),
 							handle1_connection => $ref_con,
 							handle1_connection_dbk => docbook($ref_con),
 							handle1_connection_dia => 6 + ($ref_con * 2) + $keycon_offset,
 							handle1_name => $ref_table,
 							handle1_name_dbk => docbook($ref_table),
-							handle1_to => $tableids{$ref_table},
-							handle1_to_dbk => docbook($tableids{$ref_table}),
+							handle1_schema => $ref_schema,
+							handle1_to => $tableids{"$ref_schema$ref_table"},
+							handle1_to_dbk => docbook($tableids{"$ref_schema$ref_table"}),
 							object_id => $object_id,
 							object_id_dbk => docbook($object_id),
 						};
+
+						# Build the array of schemas
+						if (scalar(keys %structure) > 1) {
+							$fk_links[-1]{"number_of_schemas"} = scalar(keys %structure);
+						}
 					}
 				}
 			}
@@ -1297,7 +1372,7 @@ sub write_using_templates
 
 	# Make database level comment information
 	my @timestamp = localtime();
-	my $dumped_on = sprintf( "%04d-%02d-%02d", $timestamp[5]+1900, $timestamp[4]+1, $timestamp[3] );
+	my $dumped_on = sprintf("%04d-%02d-%02d", $timestamp[5]+1900, $timestamp[4]+1, $timestamp[3]);
 	my $database_comment = $struct{'DATABASE'}{$database}{'COMMENT'};
 
 	# Loop through each template found in the supplied path. Output the results of the template
@@ -1338,7 +1413,7 @@ sub write_using_templates
 ######
 # sgml_safe_id
 #   Safe SGML ID Character replacement
-sub sgml_safe_id {
+sub sgml_safe_id($) {
 	my $string = shift;
 
 	# Lets use the keyword ARRAY in place of the square brackets
@@ -1367,10 +1442,29 @@ sub lower($) {
 }
 
 #####
+# useUnits
+#	Tack on base 2 metric units
+sub useUnits($) {
+	my $value = shift;
+
+	my @units = ('Bytes', 'KiBytes', 'MiBytes', 'GiBytes', 'TiBytes');
+	my $loop = 0;
+
+	while ($value >= 1024)
+	{
+		$loop++;
+
+		$value = $value / 1024;
+	}
+
+	return(sprintf("%.2f %s", $value, $units[$loop]));
+}
+
+#####
 # docbook
 #	Docbook output is special in that we may or may not want to escape
 #	the characters inside the string depending on a string prefix.
-sub docbook {
+sub docbook($) {
 	my $string = shift;
 
 	if ( defined($string) ) {
@@ -1397,7 +1491,7 @@ sub docbook {
 # graphviz
 #	GraphViz output requires that special characters (like " and whitespace) must be preceeded
 #	by a \ when a part of a lable.
-sub graphviz {
+sub graphviz($) {
 	my $string = shift;
 
 	if ( defined($string) ) {
@@ -1415,7 +1509,7 @@ sub graphviz {
 #####
 # sql_prettyprint
 #	Clean up SQL into something presentable
-sub sql_prettyprint
+sub sql_prettyprint($)
 {
 	my $string = shift;
 
@@ -1514,26 +1608,49 @@ sub sql_prettyprint
 	return $result;
 }
 
+##
+# triggerError
+#	Print out a supplied error message and exit the script.
+sub triggerError($)
+{
+	my $error = shift;
+
+	# Test error
+	if (!defined($error) || $error eq '')
+	{
+		triggerError("triggerError: Unknown error");
+	}
+	printf("\n\n%s\n", $error);
+
+	exit 2;
+}
+
 #####
 # usage
 #   Usage
-sub usage {
+sub usage() {
 	print <<USAGE
 Usage:
   $basename [options] [dbname [username]]
 
 Options:
-  -d <dbname>	 Specify database name to connect to (default: $database)
-  -f <file>	   Specify output file prefix (default: $database)
-  -h <host>	   Specify database server host (default: localhost)
-  -p <port>	   Specify database server port (default: 5432)
+  -d <dbname>     Specify database name to connect to (default: $database)
+  -f <file>       Specify output file prefix (default: $database)
+  -h <host>       Specify database server host (default: localhost)
+  -p <port>       Specify database server port (default: 5432)
   -u <username>   Specify database username (default: $dbuser)
   --password=<pw> Specify database password (default: blank)
 
-  -s <schema>	 Specify a specific schema to match. Technically this is a regular expression
-				  but anything other than a specific name may have unusual results.
+  -s <schema>	 Specify a specific schema to match. Technically this is a regular
+                 expression but anything other than a specific name may have unusual
+                 results.
+
+  --statistics   In 7.4 and later, with the contrib module pgstattuple installed we
+                 can gather statistics on the tables in the database 
+                 (average size, free space, disk space used, dead tuple counts, etc.)
+                 This is disk intensive on large databases as all pages must be visited.
 
 USAGE
 	;
-	exit 0;
+	exit 1;
 }

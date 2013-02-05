@@ -1,4 +1,4 @@
-<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/html.tmpl,v 1.17 2003/05/10 00:41:02 rtaylor02 Exp $ -->
+<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/html.tmpl,v 1.25 2003/08/02 00:48:06 rtaylor02 Exp $ -->
 
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
    "http://www.w3.org/TR/html4/strict.dtd">
@@ -125,15 +125,25 @@
 
     <!-- Schema Creation -->
     <!-- TMPL_LOOP name="schemas" --><!-- <!-- TMPL_VAR ESCAPE="HTML" name="schema" --><!-- TMPL_VAR ESCAPE="HTML" name="schema" --> -->
+
+		<!-- TMPL_IF name="number_of_schemas" -->
+		<hr>
+		<h1>Schema <!-- TMPL_VAR ESCAPE="HTML" name="schema" --></h1>
+		<!-- TMPL_IF name="schema_comment" -->
+			<p><!-- TMPL_VAR name="schema_comment" --></p>
+		<!-- /TMPL_IF name="schema_comment" -->
+
+		<!-- /TMPL_IF name="number_of_schemas" -->
 		<!-- TMPL_LOOP name="tables" -->
         <hr>
 		<h2>Table:
 			<!-- TMPL_IF name="number_of_schemas" -->
 			<a href="#schema_<!-- TMPL_VAR ESCAPE="URL" name="schema" -->"><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>.<!-- /TMPL_IF name="number_of_schemas" --><a name="table_<!-- TMPL_VAR ESCAPE="URL" name="schema" --><!-- TMPL_VAR ESCAPE="URL" name="table" -->"><!-- TMPL_VAR ESCAPE="HTML" name="table" --></a>
 		</h2>
-        <!-- TMPL_IF name="table_description" -->
-          <p><!-- TMPL_VAR ESCAPE="HTML" name="table_description" --></p>
-        <!-- /TMPL_IF name="table_description" -->
+        <!-- TMPL_IF name="table_comment" -->
+         <p><!-- TMPL_VAR ESCAPE="HTML" name="table_comment" --></p>
+        <!-- /TMPL_IF name="table_comment" -->
+
 
         <table width="100%" cellspacing="0" cellpadding="3">
                 <caption><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="table" --> Structure</caption>
@@ -147,9 +157,9 @@
             <tr class="<!-- TMPL_IF name="__odd__" -->tr0<!-- tmpl_else name="__odd__" -->tr1<!-- /TMPL_IF name="__odd__" -->">
 				<td>
                 <!-- TMPL_LOOP name="column_constraints" -->
-                  <!-- TMPL_IF name="column_fk_table" -->
-                  <a href="#table_<!-- TMPL_VAR ESCAPE="URL" name="column_fk_schema" --><!-- TMPL_VAR ESCAPE="URL" name="column_fk_table" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_table" -->.<!-- TMPL_VAR ESCAPE="HTML" name="column_fk" --><!-- TMPL_IF name="column_fk_keygroup" -->#<!-- TMPL_VAR name="column_fk_keygroup" --><!-- /TMPL_IF name="column_fk_keygroup" --></a>
-                  <!-- /TMPL_IF name="column_fk_table" -->
+                  <!-- TMPL_IF name="column_fk" -->
+                  <a href="#table_<!-- TMPL_VAR ESCAPE="URL" name="column_fk_schema" --><!-- TMPL_VAR ESCAPE="URL" name="column_fk_table" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_table" -->.<!-- TMPL_VAR ESCAPE="HTML" name="column_fk_colnum" --><!-- TMPL_IF name="column_fk_keygroup" -->#<!-- TMPL_VAR name="column_fk_keygroup" --><!-- /TMPL_IF name="column_fk_keygroup" --></a>
+                  <!-- /TMPL_IF name="column_fk" -->
                 <!-- /TMPL_LOOP name="column_constraints" -->
                 </td>
             	<td><!-- TMPL_VAR ESCAPE="HTML" name="column" --></td>
@@ -157,21 +167,44 @@
                 <td><i>
 				<!-- TMPL_LOOP name="column_constraints" -->
 					<!-- TMPL_IF name="column_primary_key" -->PRIMARY KEY
-					<!-- TMPL_ELSE name="column_primary_key" -->
-					<!-- TMPL_IF name="column_null" -->NOT NULL<!-- /TMPL_IF name="column_null" -->
 					<!-- /TMPL_IF name="column_primary_key" -->
 
 					<!-- TMPL_IF name="column_unique" -->
                        UNIQUE<!-- TMPL_IF name="column_unique_keygroup" -->#<!-- TMPL_VAR name="column_unique_keygroup" --><!-- /TMPL_IF name="column_unique_keygroup" -->
                     <!-- /TMPL_IF name="column_unique" -->
 				<!-- /TMPL_LOOP name="column_constraints" -->
+
+				<!-- TMPL_IF name="column_constraint_notnull" -->NOT NULL<!-- /TMPL_IF name="column_constraint_notnull" -->
 				<!-- TMPL_IF name="column_default" -->DEFAULT <!-- TMPL_VAR ESCAPE="HTML" name="column_default" --><!-- /TMPL_IF name="column_default" -->
 				</i>
-				<!-- TMPL_IF name="column_description" --><br><br><!-- TMPL_VAR ESCAPE="HTML" name="column_description" --><!-- /TMPL_IF name="column_description" -->
+				<!-- TMPL_IF name="column_comment" --><br><br><!-- TMPL_VAR ESCAPE="HTML" name="column_comment" --><!-- /TMPL_IF name="column_comment" -->
 				</td>
 			 </tr>
             <!-- /TMPL_LOOP name="columns" -->
         </table>
+
+		<!-- TMPL_UNLESS name="view_definition" -->
+		<!-- TMPL_IF name="stats_enabled" -->
+        <p>&nbsp;</p>
+        <table width="100%" cellspacing="0" cellpadding="3">
+         <caption>Statistics</caption>
+         <tr>
+          <th>Total Space (disk usage)</th>
+          <th>Tuple Count</th>
+          <th>Active Space</th>
+          <th>Dead Space</th>
+          <th>Free Space</th>
+         </tr>
+         <tr class="tr0">
+          <td><!-- TMPL_VAR ESCAPE="HTML" name="stats_table_bytes" --></td>
+          <td><!-- TMPL_VAR ESCAPE="HTML" name="stats_tuple_count" --></td>
+          <td><!-- TMPL_VAR ESCAPE="HTML" name="stats_tuple_bytes" --></td>
+          <td><!-- TMPL_VAR ESCAPE="HTML" name="stats_dead_bytes" --></td>
+          <td><!-- TMPL_VAR ESCAPE="HTML" name="stats_free_bytes" --></td>
+         </tr>
+        </table>
+		<!-- /TMPL_IF name="stats_enabled" -->
+		<!-- /TMPL_UNLESS name="view_definition" -->
 
         <!-- Constraint List -->
 		<!-- TMPL_IF name="constraints" -->
@@ -220,8 +253,8 @@
     		<th><center>Insert</center></th>
     		<th><center>Update</center></th>
     		<th><center>Delete</center></th>
-    		<th><center>Rule</center></th>
     		<th><center>Reference</center></th>
+    		<th><center>Rule</center></th>
     		<th><center>Trigger</center></th>
     	</tr>
 		<!-- TMPL_LOOP name="permissions" -->
@@ -231,8 +264,8 @@
 			<td><!-- TMPL_IF name="insert" --><center>&diams;</center><!-- /TMPL_IF name="insert" --></td>
 			<td><!-- TMPL_IF name="update" --><center>&diams;</center><!-- /TMPL_IF name="update" --></td>
 			<td><!-- TMPL_IF name="delete" --><center>&diams;</center><!-- /TMPL_IF name="delete" --></td>
-			<td><!-- TMPL_IF name="rule" --><center>&diams;</center><!-- /TMPL_IF name="rule" --></td>
 			<td><!-- TMPL_IF name="references" --><center>&diams;</center><!-- /TMPL_IF name="references" --></td>
+			<td><!-- TMPL_IF name="rule" --><center>&diams;</center><!-- /TMPL_IF name="rule" --></td>
 			<td><!-- TMPL_IF name="trigger" --><center>&diams;</center><!-- /TMPL_IF name="trigger" --></td>
 		</tr>
 		<!-- /TMPL_LOOP name="permissions" -->
