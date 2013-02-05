@@ -1,7 +1,7 @@
-#!/usr/bin/perl
-# $Id: postgresql_autodoc.pl,v 1.19 2001/12/18 00:37:05 rbt Exp $
+#!/usr/bin/perl -w
+# $Id: postgresql_autodoc.pl,v 1.21 2002/02/05 20:53:08 rbt Exp $
 
-# Postgres Auto-Doc Version 0.31
+# Postgres Auto-Doc Version 0.40
 
 # Installation Steps
 # ------------------
@@ -81,6 +81,20 @@ my %StereoType;
 # Stereo Type Example.  Groups all tables beginning with user or account into StereoType 'User'
 #     $StereoType{'User'} = '^(user|account)';
 
+$StereoType{'User'} = '^user';
+$StereoType{'Account Contact'} = '^contact';
+$StereoType{'Account'} = '^account';
+$StereoType{'Feature Configuration'} = '^feature';
+$StereoType{'Interface'} = '^interface';
+$StereoType{'Trigger Procedure'} = '^proc_';
+$StereoType{'Trigger'} = '^trg_';
+$StereoType{'Service Class'} = '^service_class';
+$StereoType{'Service Order'} = '^service_order';
+$StereoType{'Service'} = '^service';
+
+$StereoType{'Logging'} = '^log';
+$StereoType{'Module'} = '^module';
+
 
 #
 # Just Code down here -- Nothing to see
@@ -91,7 +105,7 @@ my $dbpass = "";
 my $dbport = "";
 my $dbhost = "";
 my $index_outputfile = "$database.html";
-my $docbook_outputfile = "$database.sgml";
+my $docbook_outputfile = "$database.xml";
 my $uml_outputfile = "$database.dia";
 my $showserials = 1;
 
@@ -101,6 +115,7 @@ my $do_docbook = 1;
 
 my $dbisset = 0;
 my $fileisset = 0;
+my $ignore_constraints = 0;
 
 my $default_group = "                   whitespace for sort order ";
 
@@ -111,7 +126,7 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                             if (! $fileisset) {
                               $uml_outputfile = $database . '.dia';
                               $index_outputfile = $database . '.html';
-                              $docbook_outputfile = $database . '.sgml';
+                              $docbook_outputfile = $database . '.xml';
                             }
                             last;
                           };
@@ -122,7 +137,7 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                               if (! $fileisset) {
                                 $uml_outputfile = $database . '.dia';
                                 $index_outputfile = $database . '.html';
-                                $docbook_outputfile = $database . '.sgml';
+                                $docbook_outputfile = $database . '.xml';
                               }
                             }
                             last;
@@ -130,7 +145,11 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
 
     /^-h$/          && do { $dbhost = $ARGV[++$i];     last; };
     /^-p$/          && do { $dbport = $ARGV[++$i];     last; };
-    /^--password=/  && do { $dbpass = $ARGV[++$i];     last; };
+
+    /^--password=/  && do { $dbpass = $ARGV[$i];
+                            $dbpass =~ s/^--password=//g;
+                            last;
+                          };
 
     /^-f$/          && do { $uml_outputfile = $ARGV[++$i];
                             $fileisset = 1;
@@ -142,15 +161,18 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                             last;
                           };
 
-    /^--no-index$/   && do { $do_index = 0;         last; };
-    /^--no-uml$/     && do { $do_uml = 0;           last; };
-    /^--no-docbook$/ && do { $do_docbook = 0;       last; };
+    /^--no-index$/   && do { $do_index = 0;            last; };
+    /^--no-uml$/     && do { $do_uml = 0;              last; };
+    /^--no-docbook$/ && do { $do_docbook = 0;          last; };
+
+    /^-C$/          && do { $ignore_constraints = 0;   last; };
+    /^-c$/          && do { $ignore_constraints = 1;   last; };
 
     /^-S$/          && do { $showserials = 0;          last; };
     /^-s$/          && do { $showserials = 1;          last; };
 
-    /^-\?$/         && do { usage(); };
-    /^--help$/      && do { usage(); };
+    /^-\?$/         && do { usage(); last;};
+    /^--help$/      && do { usage(); last;};
 
   }
 }
@@ -182,6 +204,7 @@ my $sql_Tables = qq{
        , reltriggers as hastriggers
        , pg_class.oid
        , description as table_description
+       , relacl
     FROM pg_class
   LEFT OUTER JOIN pg_description on (   pg_class.oid = pg_description.objoid
                                     AND pg_description.objsubid = 0)
@@ -253,7 +276,7 @@ my $sql_Columns = qq{
                  'char' || '(' || atttypmod - 4 || ')'
             WHEN typname = 'numeric' THEN
                  format_type(atttypid, atttypmod)
-            WHEN typname = 'text' THEN
+            ELSE
                  typname
             END
          ELSE
@@ -279,7 +302,8 @@ my $sql_Columns = qq{
                                      FROM pg_class
                                     WHERE relname = 'pg_class')
           OR pg_description.classoid IS NULL)
-     AND attrelid = ?;
+     AND attrelid = ?
+ORDER BY attnum;
 };
 
 
@@ -319,25 +343,81 @@ while (my $tables = $sth_Tables->fetchrow_hashref) {
   }
 EXPRESSIONFOUND:
 
-  if ($group eq '') {
+  if (!defined($group)) {
     $group = $default_group;
   }
 
+  ## Store permissions
+  my $acl = $tables->{'relacl'};
+
+  # Strip array forming 'junk'.
+  $acl =~ s/^{//g;
+  $acl =~ s/}$//g;
+  $acl =~ s/"//g;
+
+  foreach(split(/\,/, $acl)) {
+    my ( $user
+       , $permissions
+       ) = split(/=/, $_);
+
+    if (defined($permissions)) {
+      if (!defined($user)) {
+        $user = 'PUBLIC';
+      }
+
+      # Break down permissions to individual flags
+      if ($permissions =~ /a/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'INSERT'} = 1;
+      }
+
+      if ($permissions =~ /r/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'SELECT'} = 1;
+      }
+
+      if ($permissions =~ /w/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'UPDATE'} = 1;
+      }
+
+      if ($permissions =~ /d/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'DELETE'} = 1;
+      }
+
+      if ($permissions =~ /R/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'RULE'} = 1;
+      }
+
+      if ($permissions =~ /x/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'REFERENCES'} = 1;
+      }
+
+      if ($permissions =~ /t/) {
+        $structure{$group}{$table_name}{'ACL'}{$user}{'TRANSACTION'} = 1;
+      }
+    }
+  }
+
+
+  ## Store table description
   $structure{$group}{$table_name}{'DESCRIPTION'} = $tables->{'table_description'};
 
+  ## Store constraints
   $sth_Constraint->execute($table_oid);
   while (my $cols = $sth_Constraint->fetchrow_hashref) {
     my $constraint_name = $cols->{'constraint_name'};
 
-    $structure{$group}{$table_name}{'CONSTRAINT'}{$constraint_name} = $cols->{'constraint_source'};
+    if (! $ignore_constraints) {
+      $structure{$group}{$table_name}{'CONSTRAINT'}{$constraint_name} = $cols->{'constraint_source'};
+    }
 
 #    print "        $constraint_name\n";
   }
 
 
   $sth_Columns->execute($table_oid);
+  my $i = 1;
   while (my $cols = $sth_Columns->fetchrow_hashref) {
     my $column_name = $cols->{'column_name'};
+    $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'ORDER'} = $i;
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'PRIMARY KEY'} = 0;
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'FK'} = '';
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} = $cols->{'column_type'};
@@ -347,7 +427,9 @@ EXPRESSIONFOUND:
 
     # Convert sequences to SERIAL type.
     if (  $showserials
+       && defined($structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'})
        && $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} eq 'int4'
+       && defined($structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'})
        && $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'} =~ '^nextval\(.*?seq[\'"]*::text\)$'
        ) {
 
@@ -356,7 +438,9 @@ EXPRESSIONFOUND:
     }
 
     if (  $showserials
+       && defined($structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'})
        && $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} eq 'int8'
+       && defined($structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'})
        && $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'} =~ '^nextval\(.*?seq[\'"]*::text\)$'
        ) {
 
@@ -484,9 +568,11 @@ sub write_index_structure($structure) {
         print FH  '<a href="#group_'. $group .'">'. $group .'</a> - ';
       }
 
-      print FH  '<a name="table_'. $table.'">'. $table .'</a></h2>
-                <p>'. $structure{$group}{$table}{'DESCRIPTION'} .'</p>
-                <table width="100%" cellspacing="0" cellpadding="3" border="1">
+      print FH  '<a name="table_'. $table.'">'. $table .'</a></h2>';
+      if (defined($structure{$group}{$table}{'DESCRIPTION'})) {
+        print FH '<p>'. $structure{$group}{$table}{'DESCRIPTION'} .'</p>';
+      }
+      print FH '<table width="100%" cellspacing="0" cellpadding="3" border="1">
                 <caption>';
       if ($group ne $default_group) {
         print FH $group .' - ';
@@ -498,7 +584,10 @@ sub write_index_structure($structure) {
                 <th>Type</th>
                 <th>Description</th>
                 </tr>';
-      foreach my $column (sort keys %{$structure{$group}{$table}{'COLUMN'}})  {
+      foreach my $column (sort {   $structure{$group}{$table}{'COLUMN'}{$a}{'ORDER'} 
+                               <=> $structure{$group}{$table}{'COLUMN'}{$b}{'ORDER'}
+                               }
+                          keys %{$structure{$group}{$table}{'COLUMN'}})  {
 
         print FH '<tr>';
 
@@ -556,7 +645,7 @@ sub write_index_structure($structure) {
           }
         }
 
-        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} ne '') {
+        if (defined($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'})) {
           if ($marker_wasdata == 1) {
             print FH ' default '. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'};
           } else {
@@ -569,7 +658,7 @@ sub write_index_structure($structure) {
           print FH '</i>';
         }
 
-        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'} ne '') {
+        if (defined($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'})) {
           if ($marker_wasdata == 1) {
             print FH '<br><br>';
           }
@@ -797,7 +886,7 @@ sub write_uml_structure($structure) {
           <dia:attribute name="type">
             <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} .'#') .'</dia:string>
           </dia:attribute>';
-        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} eq '') {
+        if (!defined($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'})) {
           $columnlist .= '
           <dia:attribute name="value">
             <dia:string/>
@@ -964,7 +1053,7 @@ sub write_docbook_structure($structure) {
 
   sysopen(FH, $docbook_outputfile, O_WRONLY|O_EXCL|O_CREAT, 0644) or die "Can't open $docbook_outputfile: $!";
 
-  print FH '<appendix id="docguide" xreflabel="Schema '. $database .'"><title>'. $database .' Model</title>';
+  print FH '<appendix id="docguide" xreflabel="'. $database .' database schema"><title>'. $database .' Model</title>';
 
   ## Group Creation
   foreach my $group (sort keys %structure) {
@@ -972,8 +1061,8 @@ sub write_docbook_structure($structure) {
     foreach my $table (sort keys %{$structure{$group}}) {
 
       # Section Identifier
-      print FH '<sect1 id="'. sgml_safe_id($database) .'-table-'.  sgml_safe_id($table)
-               .'" xreflabel="Table ';
+      print FH '<section id="'. sgml_safe_id($database) .'-table-'.  sgml_safe_id($table)
+               .'" xreflabel="';
 
       if ($group ne $default_group) {
         print FH $group .' - ';
@@ -983,17 +1072,19 @@ sub write_docbook_structure($structure) {
 
 
       # Section Title
-      print FH '<title>';
+      print FH '<title>'. xml_safe_chars('Table ');
 
       if ($group ne $default_group) {
-        print FH  $group .' - ';
+        print FH  xml_safe_chars($group .' - ');
       }
 
-      print FH $table .'</title>';
+      print FH xml_safe_chars($table) .'</title>';
 
 
       # Relation Description
-      print FH '<para>'. $structure{$group}{$table}{'DESCRIPTION'} .'</para>';
+      if (defined($structure{$group}{$table}{'DESCRIPTION'})) {
+        print FH '<para>'. xml_safe_chars($structure{$group}{$table}{'DESCRIPTION'}) .'</para>';
+      }
 
       # Table structure
       print FH '<table><title>';
@@ -1002,13 +1093,13 @@ sub write_docbook_structure($structure) {
         print FH $group .' - ';
       }
 
-      print FH  'Structure of <structname>'. $table .'</structname></title><tgroup cols="4">';
+      print FH xml_safe_chars('Structure of ') .'<structname>'. xml_safe_chars($table) .'</structname></title><tgroup cols="4">';
 
       print FH '<thead><row>';
-      print FH '<entry>Name</entry>';
-      print FH '<entry>Type</entry>';
-      print FH '<entry>References</entry>';
-      print FH '<entry>Description</entry>';
+      print FH '<entry><para>'. xml_safe_chars('Name') .'</para></entry>';
+      print FH '<entry><para>'. xml_safe_chars('Type') .'</para></entry>';
+      print FH '<entry><para>'. xml_safe_chars('References') .'</para></entry>';
+      print FH '<entry><para>'. xml_safe_chars('Description') .'</para></entry>';
       print FH '</row></thead>';
       print FH '<tbody>';
 
@@ -1016,8 +1107,8 @@ sub write_docbook_structure($structure) {
 
         print FH '<row>';
 
-        print FH '<entry>'. $column .'</entry>
-                  <entry>'. $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} .'</entry>';
+        print FH '<entry><para>'. xml_safe_chars($column) .'</para></entry>
+                  <entry><para>'. xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'}) .'</para></entry>';
 
         if ($structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '') {
 
@@ -1033,14 +1124,14 @@ sub write_docbook_structure($structure) {
           }
 ENDLOOP:
 
-          print FH '<entry><xref linkend="'. sgml_safe_id($database) .'-table-'. 
-                    sgml_safe_id($structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) . '"></entry>';
+          print FH '<entry><para><xref linkend="'. sgml_safe_id($database) .'-table-'. 
+                    sgml_safe_id($structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) . '" /></para></entry>';
 
         } else {
           print FH '<entry></entry>';
         }
 
-        print FH '<entry>';
+        print FH '<entry><para>';
 
 
         my $liststarted = 0;
@@ -1050,7 +1141,7 @@ ENDLOOP:
             print FH '<simplelist>';
             $liststarted = 1;
           }
-          print FH '<member>'. $structure{$group}{$table}{'COLUMN'}{$column}{'NULL'} .'</member>';
+          print FH '<member>'. xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}{'NULL'}) .'</member>';
         }
 
         if ($structure{$group}{$table}{'COLUMN'}{$column}{'PRIMARY KEY'} == 1) {
@@ -1058,7 +1149,7 @@ ENDLOOP:
             print FH '<simplelist>';
             $liststarted = 1;
           }
-          print FH '<member>PRIMARY KEY</member>';
+          print FH '<member>'. xml_safe_chars('PRIMARY KEY') .'</member>';
         }
 
         if (exists($structure{$group}{$table}{'COLUMN'}{$column}{'UNIQUE'})) {
@@ -1066,15 +1157,15 @@ ENDLOOP:
             print FH '<simplelist>';
             $liststarted = 1;
           }
-          print FH '<member>UNIQUE</member>';
+          print FH '<member>', xml_safe_chars('UNIQUE') .'</member>';
         }
 
-        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} ne '') {
+        if (defined($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'})) {
           if ($liststarted == 0) {
             print FH '<simplelist>';
             $liststarted = 1;
           }
-          print FH '<member>DEFAULT '. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
+          print FH '<member>'. xml_safe_chars('DEFAULT ') . $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
                  . '</member>';
         }
         
@@ -1082,11 +1173,11 @@ ENDLOOP:
           print FH '</simplelist>';
         }
 
-        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'} ne '') {
-          print FH '<para>'. $structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'} .'</para>';
+        if (defined($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'})) {
+          print FH xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'});
         }
 
-        print FH '</entry>';
+        print FH '</para></entry>';
 
         print FH '</row>';
       }
@@ -1097,21 +1188,21 @@ ENDLOOP:
       my $constraintstart = 0;
       foreach my $constraint (sort keys %{$structure{$group}{$table}{'CONSTRAINT'}})  {
         if ($constraintstart == 0) {
-          print FH '<sect2><title>Constraints of table ';
+          print FH '<section><title>Constraints of table ';
 
           if ($group ne $default_group) {
             print FH $group .' - ';
           }
-          print FH $table .'.</title><para>'; 
+          print FH xml_safe_chars($table) .'.</title><para>'; 
 
           print FH '<simplelist>';
 
           $constraintstart = 1;
         }
-        print FH '<member>'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'</member>';
+        print FH '<member>'. xml_safe_chars($structure{$group}{$table}{'CONSTRAINT'}{$constraint}) .'</member>';
       }
       if ($constraintstart != 0) {
-        print FH '</simplelist></para></sect2>';
+        print FH '</simplelist></para></section>';
       }
 
       # Foreign Key Discovery
@@ -1121,8 +1212,8 @@ ENDLOOP:
           foreach my $fk_column (sort keys %{$structure{$fk_group}{$fk_table}{'COLUMN'}})  {
             if ($structure{$fk_group}{$fk_table}{'COLUMN'}{$fk_column}{'FK'} eq $table) {
               if ($fkinserted == 0) {
-                print FH '<sect2><title>Foreign Key Constrained</title>
-                          <para>Tables referencing '. $table .' via Foreign Key Constraints</para><para>';
+                print FH '<section><title>'. xml_safe_chars('Foreign Key Constrained') .'</title>
+                          <para>'. xml_safe_chars('Tables referencing '. $table .' via Foreign Key Constraints') .'</para><para>';
 
                 print FH '<simplelist>';
 
@@ -1130,16 +1221,108 @@ ENDLOOP:
               }
 
               print FH '<member><xref linkend="'. sgml_safe_id($database) .'-table-'. 
-                       sgml_safe_id($fk_table) .'"></member>';
+                       sgml_safe_id($fk_table) .'" /></member>';
             }
           }
         }
       }
       if ($fkinserted != 0) {
-        print FH '</simplelist></para></sect2>';
+        print FH '</simplelist></para></section>';
       }
 
-      print FH '</sect1>';
+
+      # List off permissions
+      my $perminserted = 0;
+      foreach my $user (sort keys %{$structure{$group}{$table}{'ACL'}}) {
+
+        # Lets not list the user unless they have atleast one permission
+        my $foundone = 0;
+        foreach my $perm (sort keys %{$structure{$group}{$table}{'ACL'}{$user}}) {
+          if ($structure{$group}{$table}{'ACL'}{$user}{$perm} == 1) {
+            $foundone = 1;
+          }
+        }
+
+        if ($foundone == 1) {
+          # Have we started the section yet?
+          if ($perminserted == 0) {
+            print FH '<section><title>'. xml_safe_chars('Table '. $table .' Permissions') .'</title>';
+            print FH '<para>';
+            print FH '<table pgwide="1">';
+            print FH '<title>'. xml_safe_chars('Permissions which apply to '. $table) .'</title>';
+            print FH '<tgroup cols="8" align="left">';
+            print FH '<thead><row>';
+            print FH '<entry rotate="0"><para>'. xml_safe_chars('User') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Select') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Insert') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Update') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Delete') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Rule') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Reference') .'</para></entry>';
+            print FH '<entry rotate="1"><para>'. xml_safe_chars('Trigger') .'</para></entry>';
+            print FH '</row></thead><tbody>';
+            
+            $perminserted = 1;
+          }
+
+          print FH '<row>';
+          print FH '<entry><para>'. xml_safe_chars($user) .'</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'SELECT'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'SELECT'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'INSERT'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'INSERT'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'UPDATE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'DELETE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'DELETE'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'RULE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'RULE'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'REFERENCES'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'REFERENCES'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry>';
+
+          print FH '<entry valign="middle" align="center"><para>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'} == 1) {
+            print FH '&check;';
+          }
+          print FH '</para></entry></row>';
+        }
+      }
+      if ($perminserted != 0) {
+        print FH '</tbody></tgroup></table></para></section>';
+      }
+      
+      print FH '</section>';
     }
   }
   print FH '</appendix>';
@@ -1152,11 +1335,15 @@ ENDLOOP:
 sub xml_safe_chars {
   my $string = shift;
 
-  $string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
-  $string =~ s/</&lt;/g;
-  $string =~ s/>/&gt;/g;
-  $string =~ s/'/&apos;/g;
-  $string =~ s/"/&quot;/g;
+  if (defined($string)) {
+    $string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
+    $string =~ s/</&lt;/g;
+    $string =~ s/>/&gt;/g;
+    $string =~ s/'/&apos;/g;
+    $string =~ s/"/&quot;/g;
+  } else {
+    return('');
+  }
 
   return ($string);
 }
@@ -1189,8 +1376,10 @@ Options:
   --no-uml        Do NOT generate XML dia file
   --no-docbook    Do NOT generate DocBook SGML file(s)
 
-  -s              Converts columns of int4 type with a sequence by default to SERIAL type
+  -s              Converts columns of int4 type with a sequence by default to SERIAL type (default)
   -S              Ignores SERIAL type entirely.  (No conversions).
+  -C              Enables display of constraints (default).
+  -C              Ignores additional constraints.
 
 USAGE
 ;
