@@ -1,4 +1,4 @@
-<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/html.tmpl,v 1.27 2003/08/11 21:56:43 rtaylor02 Exp $ -->
+<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/html.tmpl,v 1.30 2003/08/26 03:35:56 rtaylor02 Exp $ -->
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
    "http://www.w3.org/TR/html4/strict.dtd">
 
@@ -115,9 +115,9 @@
 <h1><a name="index">Index of database - <!-- TMPL_VAR ESCAPE="HTML" name="database" --></a></h1>
 <ul>
     <!-- TMPL_LOOP name="schemas" -->
-    <li><a name="schema_<!-- TMPL_VAR ESCAPE="HTML" name="schema" -->"><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a></li><ul>
-    	<!-- TMPL_LOOP name="tables" --><li><a href="#table_<!-- TMPL_VAR ESCAPE="URL" name="schema" --><!-- TMPL_VAR ESCAPE="URL" name="table" -->"><!-- TMPL_VAR ESCAPE="HTML" name="table" --></a></li><!-- /TMPL_LOOP name="tables" -->
-  	<!-- TMPL_LOOP name="functions" --><li><a href="#function_<!-- TMPL_VAR ESCAPE="URL" name="function" -->"><!-- TMPL_VAR ESCAPE="HTML" name="function" --></a></li><!-- /TMPL_LOOP name="functions" -->
+    <li><a name="<!-- TMPL_VAR ESCAPE="HTML" name="schema_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a></li><ul>
+    	<!-- TMPL_LOOP name="tables" --><li><a href="#<!-- TMPL_VAR ESCAPE="URL" name="table_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="table" --></a></li><!-- /TMPL_LOOP name="tables" -->
+  	<!-- TMPL_LOOP name="functions" --><li><a href="#<!-- TMPL_VAR ESCAPE="URL" name="function_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="function" --></a></li><!-- /TMPL_LOOP name="functions" -->
     </ul>
     <!-- /TMPL_LOOP name="schemas" -->
 </ul>
@@ -135,9 +135,9 @@
 		<!-- /TMPL_IF name="number_of_schemas" -->
 		<!-- TMPL_LOOP name="tables" -->
         <hr>
-		<h2>Table:
+		<h2><!-- TMPL_IF name="view_definition" -->View:<!-- TMPL_ELSE -->Table:<!-- /TMPL_IF -->
 			<!-- TMPL_IF name="number_of_schemas" -->
-			<a href="#schema_<!-- TMPL_VAR ESCAPE="URL" name="schema" -->"><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>.<!-- /TMPL_IF name="number_of_schemas" --><a name="table_<!-- TMPL_VAR ESCAPE="URL" name="schema" --><!-- TMPL_VAR ESCAPE="URL" name="table" -->"><!-- TMPL_VAR ESCAPE="HTML" name="table" --></a>
+			<a href="#<!-- TMPL_VAR ESCAPE="URL" name="schema_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>.<!-- /TMPL_IF name="number_of_schemas" --><a name="<!-- TMPL_VAR ESCAPE="URL" name="table_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="table" --></a>
 		</h2>
         <!-- TMPL_IF name="table_comment" -->
          <p><!-- TMPL_VAR ESCAPE="HTML" name="table_comment" --></p>
@@ -157,7 +157,7 @@
 				<td>
                 <!-- TMPL_LOOP name="column_constraints" -->
                   <!-- TMPL_IF name="column_fk" -->
-                  <a href="#table_<!-- TMPL_VAR ESCAPE="URL" name="column_fk_schema" --><!-- TMPL_VAR ESCAPE="URL" name="column_fk_table" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_table" -->.<!-- TMPL_VAR ESCAPE="HTML" name="column_fk_colnum" --><!-- TMPL_IF name="column_fk_keygroup" -->#<!-- TMPL_VAR name="column_fk_keygroup" --><!-- /TMPL_IF name="column_fk_keygroup" --></a>
+                  <a href="#<!-- TMPL_VAR ESCAPE="URL" name="column_fk_sgmlid" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="column_fk_table" -->.<!-- TMPL_VAR ESCAPE="HTML" name="column_fk_colnum" --><!-- TMPL_IF name="column_fk_keygroup" -->#<!-- TMPL_VAR name="column_fk_keygroup" --><!-- /TMPL_IF name="column_fk_keygroup" --></a>
                   <!-- /TMPL_IF name="column_fk" -->
                 <!-- /TMPL_LOOP name="column_constraints" -->
                 </td>
@@ -228,17 +228,14 @@
 			<p>Tables referencing this one via Foreign Key Constraints:</p>
 		<!-- TMPL_LOOP name="fk_schemas" -->
 			<ul>	
-				<li><a href="#table_<!-- TMPL_VAR ESCAPE="URL" name="fk_schema" --><!-- TMPL_VAR ESCAPE="URL" name="fk_table" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="fk_table" --></a></li>
+				<li><a href="#<!-- TMPL_VAR ESCAPE="URL" name="fk_sgmlid" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="fk_schema" -->.<!-- /TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="fk_table" --></a></li>
 			</ul>
 		<!-- /TMPL_LOOP name="fk_schemas" -->
 		<!-- /TMPL_IF name="fk_schemas" -->
 
 	<!-- View Definition -->
 	<!-- TMPL_IF name="view_definition" -->
-	<p>&nbsp;</p>
-	<pre>
-		<!-- TMPL_VAR ESCAPE="HTML" name="view_definition" -->
-	</pre>
+	<pre><!-- TMPL_VAR ESCAPE="HTML" name="view_definition" --></pre>
 	<!-- /TMPL_IF name="view_definition" -->
 
 	<!-- List off permissions -->
@@ -273,7 +270,7 @@
 
 	<p>
 		<a href="#index">Index</a> -
-		<a href="#schema_<!-- TMPL_VAR ESCAPE="URL" name="schema" -->">Schema <!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>
+		<a href="#<!-- TMPL_VAR ESCAPE="URL" name="schema_sgmlid" -->">Schema <!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>
     </p>
 	<!-- /TMPL_LOOP name="tables" -->
 
@@ -281,10 +278,12 @@
 	<!-- TMPL_LOOP name="functions" -->
 		<hr>
 		<h2>Function: 
-			<a href="#schema_<!-- TMPL_VAR ESCAPE="HTML" name="schema" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>.<!-- /TMPL_IF name="number_of_schemas" --><a name="function_<!-- TMPL_VAR ESCAPE="URL" name="function" -->"><!-- TMPL_VAR ESCAPE="HTML" name="function" --></a>
+			<a href="#<!-- TMPL_VAR ESCAPE="HTML" name="schema_sgmlid" -->"><!-- TMPL_IF name="number_of_schemas" --><!-- TMPL_VAR ESCAPE="HTML" name="schema" --></a>.<!-- /TMPL_IF name="number_of_schemas" --><a name="<!-- TMPL_VAR ESCAPE="URL" name="function_sgmlid" -->"><!-- TMPL_VAR ESCAPE="HTML" name="function" --></a>
 		</h2>
-
-        <pre><!-- TMPL_IF name="function_comment" --><!-- TMPL_VAR ESCAPE="HTML" name="function_comment" --><!-- tmpl_else name="function_comment" -->NO COMMENT<!-- /TMPL_IF name="function_comment" --></pre>
+<h3>Returns: <!-- TMPL_VAR ESCAPE="HTML" name="function_returns" --></h3>
+<h3>Language: <!-- TMPL_VAR ESCAPE="HTML" name="function_language" --></h3>
+        <!-- TMPL_IF name="function_comment" --><p><!-- TMPL_VAR ESCAPE="HTML" name="function_comment" --></p><!-- /TMPL_IF name="function_comment" -->
+        <pre><!-- TMPL_IF name="function_source" --><!-- TMPL_VAR ESCAPE="HTML" name="function_source" --><!-- /TMPL_IF name="function_source" --></pre>
 	<!-- /TMPL_LOOP name="functions" -->
 
 <!-- /TMPL_LOOP name="schemas" -->

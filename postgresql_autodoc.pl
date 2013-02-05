@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.105 2003/08/11 21:52:45 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.113 2003/11/01 23:19:51 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.12
+# Postgres Auto-Doc Version 1.20
 
 # License
 # -------
@@ -84,6 +84,8 @@ my $fileisset = 0;
 
 my $only_schema;
 
+my $wanted_output = undef; # means all types
+
 my $statistics = 0;
 
 # Fetch base and dirnames.  Useful for Usage()
@@ -137,6 +139,18 @@ for ( my $i = 0 ; $i <= $#ARGV ; $i++ ) {
 		/^-f$/ && do {
 			$output_filename_base = $ARGV[++$i];
 			$fileisset	  = 1;
+			last;
+		};
+
+		# Set the template directory explicitly
+		/^(-l|--library)$/ && do {
+			$template_path = $ARGV[++$i];
+			last;
+		};
+
+		# Set the output type
+		/^(-t|--type)$/ && do {
+			$wanted_output = $ARGV[++$i];
 			last;
 		};
 
@@ -233,6 +247,7 @@ my $sql_Foreign_Keys;
 my $sql_Foreign_Key_Arg;
 my $sql_Function;
 my $sql_FunctionArg;
+my $sql_Indexes;
 my $sql_Primary_Keys;
 my $sql_Schema;
 my $sql_Tables;
@@ -471,6 +486,31 @@ if ($statistics == 1)
 	};
 }
 
+if ($pgversion >= 70300)
+{
+	$sql_Indexes = qq{
+	SELECT schemaname
+	     , tablename
+	     , indexname
+	     , substring(    indexdef
+	                FROM position('(' IN indexdef) + 1
+                     FOR length(indexdef) - position('(' IN indexdef) - 1
+                    ) AS indexdef
+      FROM pg_catalog.pg_indexes
+	 WHERE substring(indexdef FROM 8 FOR 6) != 'UNIQUE'
+	   AND schemaname = ?
+	   AND tablename = ?;
+	};
+} else {
+	$sql_Indexes = qq{
+	SELECT NULL AS schemaname
+	     , NULL AS tablename
+	     , NULL AS indexname
+	     , NULL AS indexdef
+	 WHERE TRUE = FALSE;
+	};
+}
+
 
 # Fetch the list of PRIMARY and UNIQUE keys
 if ($pgversion >= 70300)
@@ -593,9 +633,13 @@ if ( $pgversion >= 70300 ) {
 		   , pg_catalog.quote_ident(lanname) AS language_name
 		   , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
 		   , proargtypes AS function_args
+		   , prosrc AS source_code
+		   , proretset AS returns_set
+		   , prorettype AS return_type
 		FROM pg_catalog.pg_proc
 		JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
 		JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
+		JOIN pg_catalog.pg_type ON (prorettype = pg_type.oid)
 	   WHERE pg_namespace.nspname !~ '$system_schema_list'
 		 AND pg_namespace.nspname ~ '$schemapattern'
 	     AND proname != 'plpgsql_call_handler';
@@ -616,6 +660,9 @@ else {
 		 , quote_ident(lanname) AS language_name
 		 , description AS comment
 		 , proargtypes AS function_args
+		 , prosrc AS source_code
+		 , proretset AS returns_set
+		 , prorettype AS return_type
 	  FROM pg_proc
 	  JOIN pg_language ON (pg_language.oid = prolang)
 	  LEFT OUTER JOIN pg_description ON (objoid = pg_proc.oid)
@@ -672,6 +719,7 @@ my $sth_Foreign_Keys	= $dbh->prepare($sql_Foreign_Keys);
 my $sth_Foreign_Key_Arg	= $dbh->prepare($sql_Foreign_Key_Arg);
 my $sth_Function		= $dbh->prepare($sql_Function);
 my $sth_FunctionArg		= $dbh->prepare($sql_FunctionArg);
+my $sth_Indexes			= $dbh->prepare($sql_Indexes);
 my $sth_Primary_Keys	= $dbh->prepare($sql_Primary_Keys);
 my $sth_Schema			= $dbh->prepare($sql_Schema);
 my $sth_Tables			= $dbh->prepare($sql_Tables);
@@ -967,6 +1015,13 @@ while ( my $tables = $sth_Tables->fetchrow_hashref ) {
 			}
 		}
 	}
+
+	# Pull out index information
+	$sth_Indexes->execute($group, $relname);
+	while (my $idx = $sth_Indexes->fetchrow_hashref)
+	{
+		$structure{$group}{$relname}{'INDEX'}{$idx->{'indexname'}} = $idx->{'indexdef'};
+	}
 }
 
 # Function Handling
@@ -997,7 +1052,15 @@ while ( my $functions = $sth_Function->fetchrow_hashref ) {
 	}
 	$functionname .= ' )';
 
+	my $ret_type = $functions->{'returns_set'} ? 'SET OF ' : '';
+	$sth_FunctionArg->execute($functions->{'return_type'});
+	my $rhash = $sth_FunctionArg->fetchrow_hashref;
+	$ret_type .= $rhash->{'type_name'};
+
 	$struct{'FUNCTION'}{$group}{$functionname}{'COMMENT'} = $comment;
+	$struct{'FUNCTION'}{$group}{$functionname}{'SOURCE'} = $functions->{'source_code'};
+	$struct{'FUNCTION'}{$group}{$functionname}{'LANGUAGE'} = $functions->{'language_name'};
+	$struct{'FUNCTION'}{$group}{$functionname}{'RETURNS'} = $ret_type;
 }
 
 # Deal with the Schema
@@ -1123,7 +1186,7 @@ sub write_using_templates
 
 			# Constraint List
 			my @constraints;
-			foreach my $constraint ( sort keys %{ $structure{$schema}{$table}{'CONSTRAINT'} } ) {
+			foreach my $constraint (sort keys %{$structure{$schema}{$table}{'CONSTRAINT'}}) {
 				my $shortcon = $structure{$schema}{$table}{'CONSTRAINT'}{$constraint};
 				$shortcon =~ s/^(.{30}).{5,}(.{5})$/$1 ... $2/g;
 				push @constraints, {
@@ -1135,6 +1198,21 @@ sub write_using_templates
 					constraint_short_dbk => docbook($shortcon),
 					table => $table,
 					table_dbk => docbook($table),
+				};
+			}
+
+			# Index List
+			my @indexes;
+			foreach my $index (sort keys %{$structure{$schema}{$table}{'INDEX'}}) { 
+				push @indexes, {
+					index_definition => $structure{$schema}{$table}{'INDEX'}{$index},
+					index_definition_dbk => docbook($structure{$schema}{$table}{'INDEX'}{$index}),
+					index_name => $index,
+					index_name_dbk => docbook($index),
+					table => $table,
+					table_dbk => docbook($table),
+					schema => $schema,
+					schema_dbk => docbook($schema),
 				};
 			}
 
@@ -1220,6 +1298,7 @@ sub write_using_templates
 
 				schema => $schema,
 				schema_dbk => docbook($schema),
+				schema_sgmlid => sgml_safe_id($schema.".schema"),
 
 				# Statistics
 				stats_enabled => $statistics,
@@ -1244,6 +1323,7 @@ sub write_using_templates
 				columns => \@columns,
 				constraints => \@constraints,
 				fk_schemas => \@fk_schemas,
+				indexes => \@indexes,
 				permissions => \@permissions,
 			};
 
@@ -1259,11 +1339,15 @@ sub write_using_templates
 			push @functions, {
 				function => $function,
 				function_dbk => docbook($function),
-				function_id => sgml_safe_id(join('.', $schema, 'function', $function)),
+				function_sgmlid => sgml_safe_id(join('.', $schema, 'function', $function)),
 				function_comment => $struct{'FUNCTION'}{$schema}{$function}{'COMMENT'},
 				function_comment_dbk => docbook($struct{'FUNCTION'}{$schema}{$function}{'COMMENT'}),
+				function_language => uc($struct{'FUNCTION'}{$schema}{$function}{'LANGUAGE'}),
+				function_returns => $struct{'FUNCTION'}{$schema}{$function}{'RETURNS'},
+				function_source => $struct{'FUNCTION'}{$schema}{$function}{'SOURCE'},
 				schema => $schema,
 				schema_dbk => docbook($schema),
+				schema_sgmlid => sgml_safe_id($schema.".schema"),
 			};
 
 			# only have the count if there is more than 1 schema
@@ -1380,11 +1464,13 @@ sub write_using_templates
 	my @template_files = glob($template_path .'/*.tmpl');
 
 	# Ensure we've told the user if we don't find any files.
-	triggerError("Templates files not found in $template_path") if ($#template_files <= 0);
+	triggerError("Templates files not found in $template_path")
+		if ($#template_files < 0);
 
 	# Process all found templates.
 	foreach my $template_file (@template_files) {
 		(my $file_extension = $template_file) =~ s/^(?:.*\/|)([^\/]+)\.tmpl$/$1/;
+		next if (defined($wanted_output) && $file_extension ne $wanted_output);
 		my $output_filename = "$output_filename_base.$file_extension";
 		print "Producing $output_filename from $template_file\n";
 
@@ -1646,15 +1732,17 @@ Options:
   -u <username>   Specify database username (default: $dbuser)
   --password=<pw> Specify database password (default: blank)
 
-  -s <schema>	 Specify a specific schema to match. Technically this is a regular
-                 expression but anything other than a specific name may have unusual
-                 results.
+  -l <path>       Path to the templates (default: @@TEMPLATE-DIR@@)
+  -t <output>     Type of output wanted (default: All in template library)
 
-  --statistics   In 7.4 and later, with the contrib module pgstattuple installed we
-                 can gather statistics on the tables in the database 
-                 (average size, free space, disk space used, dead tuple counts, etc.)
-                 This is disk intensive on large databases as all pages must be visited.
+  -s <schema>	  Specify a specific schema to match. Technically this is a regular
+                  expression but anything other than a specific name may have unusual
+                  results.
 
+  --statistics    In 7.4 and later, with the contrib module pgstattuple installed we
+                  can gather statistics on the tables in the database 
+                  (average size, free space, disk space used, dead tuple counts, etc.)
+                  This is disk intensive on large databases as all pages must be visited.
 USAGE
 	;
 	exit 1;

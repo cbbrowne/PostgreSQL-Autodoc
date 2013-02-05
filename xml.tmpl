@@ -1,4 +1,4 @@
-<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/xml.tmpl,v 1.2 2003/07/26 18:58:11 rtaylor02 Exp $ -->
+<!-- $Header: /cvsroot/pgsqlautodoc/autodoc/xml.tmpl,v 1.6 2003/11/01 22:11:32 rtaylor02 Exp $ -->
 
 <book id="database.<!-- TMPL_VAR name="database_sgmlid" -->" xreflabel="<!-- TMPL_VAR name="database_dbk" --> database schema"><title><!-- TMPL_VAR name="database_dbk" --> Model</title>
 
@@ -16,7 +16,10 @@
       <section id="<!-- TMPL_VAR name="table_sgmlid" -->"
                xreflabel="<!-- TMPL_VAR name="schema_dbk" -->.<!-- TMPL_VAR name="table_dbk" -->">
         <title id="<!-- TMPL_VAR name="table_sgmlid" -->-title">
-          <structname><!-- TMPL_VAR name="table_dbk" --></structname>
+         <!-- TMPL_IF name="view_definition" -->View:
+         <!-- TMPL_ELSE -->Table:
+         <!-- /TMPL_IF name="view_definition" -->
+         <structname><!-- TMPL_VAR name="table_dbk" --></structname>
         </title>
  
 <!-- TMPL_IF name="table_comment" -->
@@ -85,6 +88,20 @@
 <!-- /TMPL_IF name="__LAST__" -->
 <!-- /TMPL_LOOP name="constraints" -->
 
+<!-- TMPL_LOOP name="indexes" -->
+<!-- TMPL_IF name="__FIRST__" -->
+        <variablelist>
+          <title>Indexes on <!-- TMPL_VAR name="table_dbk" --></title>
+<!-- /TMPL_IF name="__FIRST__" -->
+          <varlistentry>
+            <term><!-- TMPL_VAR name="index_name_dbk" --></term>
+            <listitem><para><!-- TMPL_VAR name="index_definition_dbk" --></para></listitem>
+          </varlistentry>
+<!-- TMPL_IF name="__LAST__" -->
+        </variablelist>
+<!-- /TMPL_IF name="__LAST__" -->
+<!-- /TMPL_LOOP name="indexes" -->
+
 <!-- TMPL_LOOP name="fk_schemas" -->
 <!-- TMPL_IF name="__FIRST__" -->
         <itemizedlist>
@@ -152,20 +169,31 @@
     </section>
 <!-- /TMPL_LOOP name="tables" -->
 
-
 <!-- TMPL_LOOP name="functions" -->
 <!-- Function <!-- TMPL_VAR NAME="function" --> -->
-    <section id="<!-- TMPL_VAR NAME="function_id" -->"
+    <section id="<!-- TMPL_VAR NAME="function_sgmlid" -->"
              xreflabel="<!-- TMPL_VAR NAME="schema_dbk" --><!-- TMPL_VAR NAME="function_dbk"-->">
-      <title id="<!-- TMPL_VAR NAME="function_id" -->-title">
+      <title id="<!-- TMPL_VAR NAME="function_sgmlid" -->-title">
        <!-- TMPL_VAR name="function_dbk" -->
       </title>
-      <titleabbrev id="<!-- TMPL_VAR NAME="function_id" -->-titleabbrev">
+      <titleabbrev id="<!-- TMPL_VAR NAME="function_sgmlid" -->-titleabbrev">
        <!-- TMPL_VAR name="function_dbk" -->
       </titleabbrev>
 
       <para>
+       <segmentedlist>
+        <title>Function Properties</title>
+        <?dbhtml list-presentation="list"?>
+        <segtitle>Language</segtitle>
+        <segtitle>Return Type</segtitle>
+        <seglistitem>
+         <seg><!-- TMPL_VAR ESCAPE="HTML" name="function_language" --></seg>
+         <seg><!-- TMPL_VAR ESCAPE="HTML" name="function_returns" --></seg>
+        </seglistitem>
+       </segmentedlist>
+ 
        <!-- TMPL_VAR name="function_comment_dbk" -->
+        <programlisting><!-- TMPL_IF name="function_source" --><!-- TMPL_VAR ESCAPE="HTML" name="function_source" --><!-- /TMPL_IF name="function_source" --></programlisting>
       </para>
     </section>
 <!-- /TMPL_LOOP name="functions" -->

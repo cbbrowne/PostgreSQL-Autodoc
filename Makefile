@@ -1,4 +1,4 @@
-# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.9 2003/08/02 00:49:51 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.11 2003/08/26 03:16:04 rtaylor02 Exp $
 
 TEMPLATES = dia.tmpl dot.tmpl html.tmpl xml.tmpl
 BINARY = postgresql_autodoc
@@ -31,18 +31,23 @@ all: $(ALWAYS_DEPEND) $(BINARY)
 
 ####
 # Replace the /usr/bin/env perl with the supplied path
-$(BINARY): postgresql_autodoc.pl
+# chmod to make testing easier
+$(BINARY): postgresql_autodoc.pl $(CONFIGFILE)
 	$(SED) -e "s,/usr/bin/env perl,$(PERL)," \
 			-e "s,@@TEMPLATE-DIR@@,$(datadir)," \
 		 postgresql_autodoc.pl > $(BINARY)
+	-chmod +x $(BINARY)
 
 ####
 # INSTALL Target
 .PHONY: install
 install: all $(ALWAYS_DEPEND)
-	$(INSTALL_SCRIPT) -d $(bindir) $(datadir)
+	$(INSTALL_SCRIPT) -d $(bindir)
+	$(INSTALL_SCRIPT) -d $(datadir)
 	$(INSTALL_SCRIPT) -m 755 $(BINARY) $(bindir)
-	$(INSTALL_SCRIPT) -m 644 $(TEMPLATES) $(datadir)
+	for entry in $(TEMPLATES) ; \
+		do $(INSTALL_SCRIPT) -m 644 $${entry} $(datadir) ; \
+	done
 
 ####
 # CLEAN / DISTRIBUTION-CLEAN / MAINTAINER-CLEAN Targets
