@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.15 2007/01/02 13:53:19 rbt Exp $
+# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.21 2008/03/12 19:00:56 rbt Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.30
+# Postgres Auto-Doc Version 1.31
 
 # License
 # -------
@@ -58,8 +58,7 @@ use HTML::Template;
 # Allow reading a password from stdin
 use Term::ReadKey;
 
-sub main($)
-{
+sub main($) {
     my ($ARGV) = @_;
 
     my %db;
@@ -93,6 +92,8 @@ sub main($)
 
     my $only_schema;
 
+    my $table_out;
+
     my $wanted_output = undef;    # means all types
 
     my $statistics = 0;
@@ -106,7 +107,7 @@ sub main($)
     # If template_path isn't defined, lets set it ourselves
     $template_path = $dirname if ( !defined($template_path) );
 
-    for ( my $i = 0; $i <= $#ARGV; $i++ ) {
+    for ( my $i = 0 ; $i <= $#ARGV ; $i++ ) {
       ARGPARSE: for ( $ARGV[$i] ) {
 
             # Set the database
@@ -176,6 +177,22 @@ sub main($)
                 last;
             };
 
+            # One might dump a table's set (comma-separated) or just one
+            # If dumping a set of specific tables do NOT dump out the functions
+            # in this database. Generates noise in the output
+            # that most likely isn't wanted. Check for $table_out around the
+            # function gathering location.
+            /^--table=/ && do {
+                my $some_table = $ARGV[$i];
+                $some_table =~ s/^--table=//g;
+
+                my @tables_in = split( ',', $some_table );
+                sub single_quote;
+                $table_out = join( ',', map( single_quote, @tables_in ) );
+
+                last;
+            };
+
             # Check to see if Statistics have been requested
             /^--statistics$/ && do {
                 $statistics = 1;
@@ -201,7 +218,7 @@ Msg
 
     # If needpass has been set but no password was provided, prompt the user
     # for a password.
-    if ($needpass and not $dbpass) {
+    if ( $needpass and not $dbpass ) {
         print "Password: ";
         ReadMode 'noecho';
         $dbpass = ReadLine 0;
@@ -216,7 +233,7 @@ Msg
     $dsn .= ";port=$dbport" if ( "$dbport" ne "" );
 
     info_collect( [ $dsn, $dbuser, $dbpass ],
-        \%db, $database, $only_schema, $statistics );
+        \%db, $database, $only_schema, $statistics, $table_out );
 
     # Write out *ALL* templates
     write_using_templates( \%db, $database, $statistics, $template_path,
@@ -227,9 +244,9 @@ Msg
 # info_collect
 #
 # Pull out all of the applicable information about a specific database
-sub info_collect($$$$$)
-{
-    my ( $dbConnect, $db, $database, $only_schema, $statistics ) = @_;
+sub info_collect {
+    my ( $dbConnect, $db, $database, $only_schema, $statistics, $table_out ) =
+      @_;
 
     my $dbh = DBI->connect( @{$dbConnect} )
       or triggerError("Unable to connect due to: $DBI::errstr");
@@ -258,8 +275,8 @@ sub info_collect($$$$$)
     #
     # schemapattern      -> The schema the user provided as a command
     #                       line option.
-    my $schemapattern      = '^';
-    my $system_schema      = 'pg_catalog';
+    my $schemapattern = '^';
+    my $system_schema = 'pg_catalog';
     my $system_schema_list =
       'pg_catalog|pg_toast|pg_temp_[0-9]+|information_schema';
     if ( defined($only_schema) ) {
@@ -309,8 +326,9 @@ sub info_collect($$$$$)
          JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
         WHERE relkind IN ('r', 's', 'v')
           AND nspname !~ '$system_schema_list'
-          AND nspname ~ '$schemapattern';
+          AND nspname ~ '$schemapattern' 
     };
+    $sql_Tables .= qq{ AND relname IN ($table_out)} if defined($table_out);
 
     # - uses pg_class.oid
     my $sql_Columns = q{
@@ -659,7 +677,7 @@ sub info_collect($$$$$)
         }
 
         # Primitive Stats, but only if requested
-        if ( $statistics == 1 ) {
+        if ( $statistics == 1 and $tables->{'reltype'} eq 'table' ) {
             $sth_Table_Statistics->execute($reloid);
 
             my $stats = $sth_Table_Statistics->fetchrow_hashref;
@@ -788,20 +806,32 @@ sub info_collect($$$$$)
             my $keys   = $forcols->{'constraint_key'};
             my $frelid = $forcols->{'foreignrelid'};
 
-            # Since decent array support was not added to 7.4, and
+            # Since decent array support was not added until 7.4, and
             # we want to support 7.3 as well, we parse the text version
             # of the array by hand rather than combining this and
             # Foreign_Key_Arg query into a single query.
-            $fkey =~ s/^{//g;
-            $fkey =~ s/}$//g;
-            $fkey =~ s/"//g;
 
-            $keys =~ s/^{//g;
-            $keys =~ s/}$//g;
-            $keys =~ s/"//g;
+            my @fkeyset;
+            if ( ref $fkey eq 'ARRAY' ) {
+                @fkeyset = @{$fkey};
+            }
+            else {    # DEPRECATED: DBD::Pg 1.49 and earlier
+                $fkey =~ s/^{//g;
+                $fkey =~ s/}$//g;
+                $fkey =~ s/"//g;
+                @fkeyset = split( /,/, $fkey );
+            }
 
-            my @keyset  = split( /,/, $keys );
-            my @fkeyset = split( /,/, $fkey );
+            my @keyset;
+            if ( ref $keys eq 'ARRAY' ) {
+                @keyset = @{$keys};
+            }
+            else {    # DEPRECATED: DBD::Pg 1.49 and earlier
+                $keys =~ s/^{//g;
+                $keys =~ s/}$//g;
+                $keys =~ s/"//g;
+                @keyset = split( /,/, $keys );
+            }
 
             # Convert the list of column numbers into column names for the
             # local side.
@@ -885,7 +915,8 @@ sub info_collect($$$$$)
 
     # Function Handling
     $sth_Function->execute();
-    while ( my $functions = $sth_Function->fetchrow_hashref ) {
+    while ( my $functions = $sth_Function->fetchrow_hashref and not $table_out )
+    {
         my $functionname = $functions->{'function_name'} . '( ';
         my $schema       = $functions->{'namespace'};
         my $comment      = $functions->{'comment'};
@@ -931,7 +962,7 @@ sub info_collect($$$$$)
         $ret_type .= $rhash->{'type_name'};
 
         $struct->{$schema}{'FUNCTION'}{$functionname}{'COMMENT'} = $comment;
-        $struct->{$schema}{'FUNCTION'}{$functionname}{'SOURCE'}  =
+        $struct->{$schema}{'FUNCTION'}{$functionname}{'SOURCE'} =
           $functions->{'source_code'};
         $struct->{$schema}{'FUNCTION'}{$functionname}{'LANGUAGE'} =
           $functions->{'language_name'};
@@ -972,8 +1003,7 @@ sub info_collect($$$$$)
 # Generate structure that HTML::Template requires out of the
 # $struct for table related information, and $struct for
 # the schema and function information
-sub write_using_templates($$$$$)
-{
+sub write_using_templates($$$$$) {
     my ( $db, $database, $statistics, $template_path, $output_filename_base,
         $wanted_output )
       = @_;
@@ -1093,9 +1123,9 @@ sub write_using_templates($$$$$)
 
                 # Generate the Column array
                 push @columns, {
-                    column         => $column,
-                    column_dbk     => docbook($column),
-                    column_dot     => graphviz($column),
+                    column     => $column,
+                    column_dbk => docbook($column),
+                    column_dot => graphviz($column),
                     column_default =>
                       $struct->{$schema}{'TABLE'}{$table}{'COLUMN'}{$column}
                       {'DEFAULT'},
@@ -1210,7 +1240,7 @@ sub write_using_templates($$$$$)
                         schema     => $schema,
                         schema_dbk => docbook($schema),
                         schema_dot => graphviz($schema),
-                        sgmlid     =>
+                        sgmlid =>
                           sgml_safe_id( join( '.', $schema, 'table', $table ) ),
                         parent_sgmlid => sgml_safe_id(
                             join( '.', $inhSch, 'table', $inhTab )
@@ -1332,8 +1362,7 @@ sub write_using_templates($$$$$)
 
             # Increment and record the object ID
             $tableids{"$schema$table"} = ++$object_id;
-            my $viewdef =
-              sql_prettyprint(
+            my $viewdef = sql_prettyprint(
                 $struct->{$schema}{'TABLE'}{$table}{'VIEW_DEF'} );
 
             # Truncate comment for Dia
@@ -1415,8 +1444,8 @@ sub write_using_templates($$$$$)
         foreach my $function ( sort keys %{ $struct->{$schema}{'FUNCTION'} } ) {
             push @functions,
               {
-                function        => $function,
-                function_dbk    => docbook($function),
+                function     => $function,
+                function_dbk => docbook($function),
                 function_sgmlid =>
                   sgml_safe_id( join( '.', $schema, 'function', $function ) ),
                 function_comment =>
@@ -1444,11 +1473,11 @@ sub write_using_templates($$$$$)
 
         push @schemas,
           {
-            schema             => $schema,
-            schema_dbk         => docbook($schema),
-            schema_dot         => graphviz($schema),
-            schema_sgmlid      => sgml_safe_id( $schema . ".schema" ),
-            schema_comment     => $struct->{$schema}{'SCHEMA'}{'COMMENT'},
+            schema         => $schema,
+            schema_dbk     => docbook($schema),
+            schema_dot     => graphviz($schema),
+            schema_sgmlid  => sgml_safe_id( $schema . ".schema" ),
+            schema_comment => $struct->{$schema}{'SCHEMA'}{'COMMENT'},
             schema_comment_dbk =>
               docbook( $struct->{$schema}{'SCHEMA'}{'COMMENT'} ),
             functions => \@functions,
@@ -1522,10 +1551,10 @@ sub write_using_templates($$$$$)
                         {
                             $ref_con =
                               $struct->{$ref_schema}{'TABLE'}{$ref_table}
-                              {'COLUMN'}{$ref_column}{'ORDER'};
+                              {'COLUMN'}{$ref_column}{'ORDER'} || 0;
                             $key_con =
                               $struct->{$schema}{'TABLE'}{$table}{'COLUMN'}
-                              {$column}{'ORDER'};
+                              {$column}{'ORDER'} || 0;
                             $keycon_offset = 1;
                         }
 
@@ -1543,12 +1572,13 @@ sub write_using_templates($$$$$)
                             handle0_name           => $table,
                             handle0_name_dbk       => docbook($table),
                             handle0_schema         => $schema,
-                            handle0_to     => $tableids{"$schema$table"},
+                            handle0_to => $tableids{"$schema$table"},
                             handle0_to_dbk =>
                               docbook( $tableids{"$schema$table"} ),
                             handle1_connection     => $ref_con,
                             handle1_connection_dbk => docbook($ref_con),
-                            handle1_connection_dia => 6 + ( $ref_con * 2 ) +
+                            handle1_connection_dia => 6 +
+                              ( $ref_con * 2 ) +
                               $keycon_offset,
                             handle1_name     => $ref_table,
                             handle1_name_dbk => docbook($ref_table),
@@ -1626,8 +1656,7 @@ sub write_using_templates($$$$$)
 ######
 # sgml_safe_id
 #   Safe SGML ID Character replacement
-sub sgml_safe_id($)
-{
+sub sgml_safe_id($) {
     my $string = shift;
 
     # Lets use the keyword ARRAY in place of the square brackets
@@ -1647,8 +1676,7 @@ sub sgml_safe_id($)
 #####
 # lower
 #    LowerCase the string
-sub lower($)
-{
+sub lower($) {
     my $string = shift;
 
     $string =~ tr/A-Z/a-z/;
@@ -1659,14 +1687,13 @@ sub lower($)
 #####
 # useUnits
 #    Tack on base 2 metric units
-sub useUnits($)
-{
+sub useUnits($) {
     my ($value) = @_;
 
     return '' if ( !defined($value) );
 
     my @units = ( 'Bytes', 'KiBytes', 'MiBytes', 'GiBytes', 'TiBytes' );
-    my $loop  = 0;
+    my $loop = 0;
 
     while ( $value >= 1024 ) {
         $loop++;
@@ -1681,8 +1708,7 @@ sub useUnits($)
 # docbook
 #    Docbook output is special in that we may or may not want to escape
 #    the characters inside the string depending on a string prefix.
-sub docbook($)
-{
+sub docbook($) {
     my $string = shift;
 
     if ( defined($string) ) {
@@ -1710,8 +1736,7 @@ sub docbook($)
 # graphviz
 #    GraphViz output requires that special characters (like " and whitespace) must be preceeded
 #    by a \ when a part of a lable.
-sub graphviz($)
-{
+sub graphviz($) {
     my $string = shift;
 
     # Ensure we don't return an least a empty string
@@ -1725,8 +1750,7 @@ sub graphviz($)
 #####
 # sql_prettyprint
 #    Clean up SQL into something presentable
-sub sql_prettyprint($)
-{
+sub sql_prettyprint($) {
     my $string = shift;
 
     # If nothing has been sent in, return an empty string
@@ -1822,8 +1846,7 @@ sub sql_prettyprint($)
 ##
 # triggerError
 #    Print out a supplied error message and exit the script.
-sub triggerError($)
-{
+sub triggerError($) {
     my ($error) = @_;
 
     # Test error
@@ -1839,8 +1862,7 @@ sub triggerError($)
 
 #####
 # usage
-sub usage($$$)
-{
+sub usage($$$) {
     my ( $basename, $database, $dbuser ) = @_;
     print <<USAGE
 Usage:
@@ -1861,6 +1883,8 @@ Options:
   -s <schema>      Specify a specific schema to match. Technically this is a regular
                   expression but anything other than a specific name may have unusual
                   results.
+  --table=<args>  Tables to export. Multiple tables may be provided using a
+                  comma-separated list.
 
   --statistics    In 7.4 and later, with the contrib module pgstattuple installed we
                   can gather statistics on the tables in the database 
@@ -1869,6 +1893,12 @@ Options:
 USAGE
       ;
     exit 1;
+}
+
+sub single_quote {
+    my $attr = $_;
+    $attr =~ s/^\s+|\s+$//g;
+    return qq{'$attr'};
 }
 
 ##
