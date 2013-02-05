@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.3 2004/06/03 01:46:28 rbt Exp $
+# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.6 2004/10/13 13:46:34 rbt Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.23
+# Postgres Auto-Doc Version 1.24
 
 # License
 # -------
@@ -895,6 +895,8 @@ while ( my $tables = $sth_Tables->fetchrow_hashref ) {
 		while ($column = pop(@collist) ) {
 			$column =~ s/\s$//;
 			$column =~ s/^\s//;
+			$column =~ s/^"//;
+			$column =~ s/"$//;
 
 			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} = $index_type;
 
@@ -1315,6 +1317,10 @@ sub write_using_templates
 			$tableids{"$schema$table"} = ++$object_id;
 			my $viewdef = sql_prettyprint($structure{$schema}{$table}{'VIEW_DEF'});
 
+			# Truncate comment for Dia
+                        my $comment_dia = $structure{$schema}{$table}{'DESCRIPTION'};
+			$comment_dia =~ s/^(.{35}).{5,}(.{5})$/$1 ... $2/g;
+
 			push @tables, {
 				object_id => $object_id,
 				object_id_dbk => docbook($object_id),
@@ -1343,6 +1349,7 @@ sub write_using_templates
 				table_sgmlid => sgml_safe_id(join('.', $schema, $structure{$schema}{$table}{'TYPE'}, $table)),
 				table_comment => $structure{$schema}{$table}{'DESCRIPTION'},
 				table_comment_dbk => docbook($structure{$schema}{$table}{'DESCRIPTION'}),
+                                table_comment_dia => $comment_dia,
 				view_definition => $viewdef,
 				view_definition_dbk => docbook($viewdef),
 				columns => \@columns,
