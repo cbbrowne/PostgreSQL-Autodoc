@@ -1,8 +1,9 @@
-#!/usr/bin/perl -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.37 2002/09/03 16:24:05 rtaylor02 Exp $
+#!/usr/bin/env perl
+# -- # -*- Perl -*-w
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.89 2003/05/14 20:17:42 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.00
+# Postgres Auto-Doc Version 1.10
 
 # License
 # -------
@@ -51,11 +52,17 @@ use strict;
 # Allows file locking
 use Fcntl;
 
-use Data::Dumper;
+## Useful for debugging ##
+#use Data::Dumper;
 
-#
-# Just Code below here -- nothing to see unless your feeling masochistic.
-#
+# Allows file templates
+use HTML::Template;
+
+# The templates path
+# @@TEMPLATE-DIR@@ will be replaced by make in the build phase
+my $template_path = '@@TEMPLATE-DIR@@';
+
+# Setup the default connection variables based on the environment
 my $dbuser = $ENV{'PGUSER'};
 $dbuser ||= $ENV{'USER'};
 
@@ -68,85 +75,85 @@ $dbhost ||= "";
 my $dbport = $ENV{'PGPORT'};
 $dbport ||= "";
 
-my $dbpass             = "";
-my $index_outputfile   = "$database.html";
-my $docbook_outputfile = "$database.xml";
-my $uml_outputfile     = "$database.dia";
-my $dot_outputfile     = "$database.dot";
+my $dbpass = "";
+my $output_filename_base = $database;
 
-my $do_index   = 1;
-my $do_uml     = 1;
-my $do_docbook = 1;
-my $do_dot     = 1;
-
-my $dbisset   = 0;
+# Tracking variables
+my $dbisset = 0;
 my $fileisset = 0;
 
+my $only_schema;
+
+# Fetch base and dirnames.  Useful for Usage()
 my $basename = $0;
-$basename =~ s|.*/([^/]+)$|$1|;
+my $dirname = $0;
+$basename =~ s|^.*/([^/]+)$|$1|;
+$dirname =~ s|^(.*)/[^/]+$|$1|;
+
+# If template_path isn't defined, lets set it ourselves
+$template_path = $dirname if (!defined($template_path));
 
 for ( my $i = 0 ; $i <= $#ARGV ; $i++ ) {
   ARGPARSE: for ( $ARGV[$i] ) {
-        /^-d$/ && do {
-            $database = $ARGV[ ++$i ];
-            $dbisset  = 1;
-            if ( !$fileisset ) {
-                $uml_outputfile     = $database . '.dia';
-                $dot_outputfile     = $database . '.dot';
-                $index_outputfile   = $database . '.html';
-                $docbook_outputfile = $database . '.sgml';
-            }
-            last;
-        };
+		# Set the database
+		/^-d$/ && do {
+			$database = $ARGV[ ++$i ];
+			$dbisset  = 1;
+			if ( !$fileisset ) {
+				$output_filename_base = $database;
+			}
+			last;
+		};
 
-        /^-[uU]$/ && do {
-            $dbuser = $ARGV[ ++$i ];
-            if ( !$dbisset ) {
-                $database = $dbuser;
-                if ( !$fileisset ) {
-                    $uml_outputfile     = $database . '.dia';
-                    $dot_outputfile     = $database . '.dot';
-                    $index_outputfile   = $database . '.html';
-                    $docbook_outputfile = $database . '.sgml';
-                }
-            }
-            last;
-        };
+		# Set the user
+		/^-[uU]$/ && do {
+			$dbuser = $ARGV[ ++$i ];
+			if ( !$dbisset ) {
+				$database = $dbuser;
+				if ( !$fileisset ) {
+					$output_filename_base = $database;
+				}
+			}
+			last;
+		};
 
-        /^-h$/ && do { $dbhost = $ARGV[ ++$i ]; last; };
-        /^-p$/ && do { $dbport = $ARGV[ ++$i ]; last; };
+		# Set the hostname
+		/^-h$/ && do { $dbhost = $ARGV[ ++$i ]; last; };
 
-        /^--password=/ && do {
-            $dbpass = $ARGV[$i];
-            $dbpass =~ s/^--password=//g;
-            last;
-        };
+		# Set the Port
+		/^-p$/ && do { $dbport = $ARGV[ ++$i ]; last; };
 
-        /^-f$/ && do {
-            $uml_outputfile = $ARGV[ ++$i ];
-            $fileisset      = 1;
-            last;
-        };
+		# Set the users password
+		/^--password=/ && do {
+			$dbpass = $ARGV[$i];
+			$dbpass =~ s/^--password=//g;
+			last;
+		};
 
-        /^-F$/ && do {
-            $index_outputfile = $ARGV[ ++$i ];
-            $fileisset        = 1;
-            last;
-        };
+		# Set the base of the filename.  The extensions pulled from the templates
+		# will be appended to this name
+		/^-f$/ && do {
+			$output_filename_base = $ARGV[++$i];
+			$fileisset	  = 1;
+			last;
+		};
 
-        /^--no-index$/   && do { $do_index   = 0; last; };
-        /^--no-uml$/     && do { $do_uml     = 0; last; };
-        /^--no-docbook$/ && do { $do_docbook = 0; last; };
-        /^--no-dot$/     && do { $do_dot     = 0; last; };
+		# User has requested a single schema dump and provided a pattern
+		/^(-s|--schema)$/ && do {
+			$only_schema = $ARGV[++$i];
+			last;
+		};
 
-        /^-\?$/    && do { usage(); last; };
-        /^--help$/ && do { usage(); last; };
-
-    }
+		# Help is wanted, redirect user to usage()
+		/^-\?$/	&& do { usage(); last; };
+		/^--help$/ && do { usage(); last; };
+	}
 }
 
+# If no arguments have been provided, connect to the database anyway but
+# inform the user of what we're doing.
 if ( $#ARGV <= 0 ) {
-    print <<Msg
+	print <<Msg
 No arguments set.  Use '$basename --help' for help
 
 Connecting to database '$database' as user '$dbuser'
@@ -154,25 +161,24 @@ Msg
 ;
 }
 
+
+# Database Connection
 my $dsn = "dbi:Pg:dbname=$database";
 $dsn .= ";host=$dbhost" if ( "$dbhost" ne "" );
 $dsn .= ";port=$dbport" if ( "$dbport" ne "" );
-
-# Database Connection
-# -------------------
 my $dbh = DBI->connect( $dsn, $dbuser, $dbpass );
 
-# $dbh->{'AutoCommit'} = 0;
-
+# Always disconnect from the database if a database handle is setup
 END {
-    $dbh->disconnect() if $dbh;
+	$dbh->disconnect() if $dbh;
 }
 
-## Fetch the version of PostgreSQL
+# PostgreSQL's version is used to determine what queries are required
+# to retrieve a given information set.
 my $sql_GetVersion = qq{
   SELECT cast(substr(version(), 12, 1) as integer) * 10000
-         + cast(substr(version(), 14, 1) as integer) * 100
-         as version;
+		 + cast(substr(version(), 14, 1) as integer) * 100
+		 as version;
 };
 
 my $sth_GetVersion = $dbh->prepare($sql_GetVersion);
@@ -180,413 +186,465 @@ $sth_GetVersion->execute();
 my $version   = $sth_GetVersion->fetchrow_hashref;
 my $pgversion = $version->{'version'};
 
+# Ensure we only get information for the requested schemas.
+#
+# system_schema	     -> The primary system schema for a database.
+#                       Public is used for verions prior to 7.3
+#
+# system_schema_list -> The list of schemas which we are not supposed
+#                       to gather information for.
+#                        TODO: Merge with system_schema in array form.
+#
+# schemapattern      -> The schema the user provided as a command
+#                       line option.
+my $schemapattern = '^';
 my $system_schema;
+my $system_schema_list;
 if ( $pgversion >= 70300 ) {
-    $system_schema = 'pg_catalog';
+	$system_schema = 'pg_catalog';
+	$system_schema_list = 'pg_catalog|information_schema';
+	if (defined($only_schema)) {
+		$schemapattern = '^'. $only_schema .'$';
+	}
 }
 else {
-    $system_schema = 'public';
+	$system_schema = 'public';
+	$system_schema_list = $system_schema;
 }
 
-# Queries which differ depending on version
-my $sql_Database;
-my $sql_Tables;
+#
+# List of queries which are used to gather information from the
+# database. The queries differ based on version but should 
+# provide similar output. At some point it should be safe to remove
+# support for older database versions.
+#
 my $sql_Columns;
 my $sql_Constraint;
-my $sql_Function;
-my $sql_FunctionArg;
+my $sql_Database;
 my $sql_Foreign_Keys;
 my $sql_Foreign_Key_Arg;
+my $sql_Function;
+my $sql_FunctionArg;
+my $sql_Primary_Keys;
 my $sql_Schema;
+my $sql_Tables;
 
-## Fetch for tables and classes
+# Pull out a list of tables, views and special structures. 
 if ( $pgversion >= 70300 ) {
-    $sql_Tables = qq{
-    SELECT pg_catalog.quote_ident(nspname) as namespace
-         , pg_catalog.quote_ident(relname) as tablename
-         , pg_catalog.pg_get_userbyid(relowner) AS tableowner
-         , relhasindex as hasindexes
-         , relhasrules as hasrules
-         , reltriggers as hastriggers
-         , pg_class.oid
-         , pg_catalog.obj_description(pg_class.oid, 'pg_class') as table_description
-         , relacl
-      FROM pg_catalog.pg_class
-      JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-     WHERE (  relkind = 'r'::"char"
-           OR relkind = 's'::"char"
-           )
-       AND nspname != '$system_schema';
-    };
+	$sql_Tables = qq{
+	SELECT pg_catalog.quote_ident(nspname) as namespace
+		 , pg_catalog.quote_ident(relname) as tablename
+		 , pg_catalog.pg_get_userbyid(relowner) AS tableowner
+		 , relhasindex as hasindexes
+		 , relhasrules as hasrules
+		 , reltriggers as hastriggers
+		 , pg_class.oid
+		 , pg_catalog.obj_description(pg_class.oid, 'pg_class') as table_description
+		 , relacl
+		 , CASE
+		   WHEN relkind = 'r' THEN
+			 'table'
+		   WHEN relkind = 's' THEN
+			 'special'
+		   ELSE
+			 'view'
+		   END as reltype
+		 , CASE
+		   WHEN relkind = 'v' THEN
+			 pg_get_viewdef(pg_class.oid)
+		   ELSE
+			 NULL
+		   END as view_definition
+	  FROM pg_catalog.pg_class
+	  JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
+	 WHERE relkind IN ('r', 's', 'v')
+	   AND nspname !~ '$system_schema_list'
+	   AND nspname ~ '$schemapattern';
+	};
 
-    # - uses pg_class.oid
-    $sql_Columns = qq{
-    SELECT pg_catalog.quote_ident(attname) as column_name
-         , attlen as column_length
-         , CASE
-           WHEN pg_type.typname = 'int4'
-                AND EXISTS (SELECT TRUE
-                              FROM pg_catalog.pg_depend
-                              JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
-                             WHERE refobjsubid = attnum
-                               AND refobjid = attrelid
-                               AND relkind = 'S') THEN
-             'serial'
-           WHEN pg_type.typname = 'int8'
-                AND EXISTS (SELECT TRUE
-                              FROM pg_catalog.pg_depend
-                              JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
-                             WHERE refobjsubid = attnum
-                               AND refobjid = attrelid
-                               AND relkind = 'S') THEN
-             'bigserial'
-           ELSE
-             pg_catalog.format_type(atttypid, atttypmod)
-           END as column_type
-         , CASE
-           WHEN attnotnull THEN
-             cast('NOT NULL' as text)
-           ELSE
-             cast('' as text)
-           END as column_null
-         , CASE
-           WHEN pg_type.typname IN ('int4', 'int8')
-                AND EXISTS (SELECT TRUE
-                              FROM pg_catalog.pg_depend
-                              JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
-                             WHERE refobjsubid = attnum
-                               AND refobjid = attrelid
-                               AND relkind = 'S') THEN
-             NULL
-           ELSE
-             adsrc
-           END as column_default
-         , pg_catalog.col_description(attrelid, attnum) as column_description
-         , attnum
-      FROM pg_catalog.pg_attribute 
-                 JOIN pg_catalog.pg_type ON (pg_type.oid = atttypid) 
-      LEFT OUTER JOIN pg_catalog.pg_attrdef ON (   attrelid = adrelid 
-                                               AND attnum = adnum)
-     WHERE attnum > 0
-       AND attisdropped IS FALSE
-       AND attrelid = ?;
-    };
+	# - uses pg_class.oid
+	$sql_Columns = qq{
+	SELECT pg_catalog.quote_ident(attname) as column_name
+		 , attlen as column_length
+		 , CASE
+		   WHEN pg_type.typname = 'int4'
+				AND EXISTS (SELECT TRUE
+							  FROM pg_catalog.pg_depend
+							  JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
+							 WHERE refobjsubid = attnum
+							   AND refobjid = attrelid
+							   AND relkind = 'S') THEN
+			 'serial'
+		   WHEN pg_type.typname = 'int8'
+				AND EXISTS (SELECT TRUE
+							  FROM pg_catalog.pg_depend
+							  JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
+							 WHERE refobjsubid = attnum
+							   AND refobjid = attrelid
+							   AND relkind = 'S') THEN
+			 'bigserial'
+		   ELSE
+			 pg_catalog.format_type(atttypid, atttypmod)
+		   END as column_type
+		 , CASE
+		   WHEN attnotnull THEN
+			 cast('NOT NULL' as text)
+		   ELSE
+			 cast('' as text)
+		   END as column_null
+		 , CASE
+		   WHEN pg_type.typname IN ('int4', 'int8')
+				AND EXISTS (SELECT TRUE
+							  FROM pg_catalog.pg_depend
+							  JOIN pg_catalog.pg_class ON (pg_class.oid = objid)
+							 WHERE refobjsubid = attnum
+							   AND refobjid = attrelid
+							   AND relkind = 'S') THEN
+			 NULL
+		   ELSE
+			 adsrc
+		   END as column_default
+		 , pg_catalog.col_description(attrelid, attnum) as column_description
+		 , attnum
+	  FROM pg_catalog.pg_attribute 
+				 JOIN pg_catalog.pg_type ON (pg_type.oid = atttypid) 
+	  LEFT OUTER JOIN pg_catalog.pg_attrdef ON (   attrelid = adrelid 
+											   AND attnum = adnum)
+	 WHERE attnum > 0
+	   AND attisdropped IS FALSE
+	   AND attrelid = ?;
+	};
 
 }
 elsif ( $pgversion >= 70200 ) {
-    $sql_Tables = qq{
-    SELECT quote_ident('public') as namespace
-         , quote_ident(relname) as tablename
-         , pg_get_userbyid(relowner) AS tableowner
-         , relhasindex as hasindexes
-         , relhasrules as hasrules
-         , reltriggers as hastriggers
-         , pg_class.oid
-         , obj_description(pg_class.oid, 'pg_class') as table_description
-         , relacl
-      FROM pg_class
-     WHERE (  relkind = 'r'::"char"
-           OR relkind = 's'::"char"
-           )
-       AND relname NOT LIKE 'pg_%';
-    };
+	$sql_Tables = qq{
+	SELECT quote_ident('public') as namespace
+		 , quote_ident(relname) as tablename
+		 , pg_get_userbyid(relowner) AS tableowner
+		 , relhasindex as hasindexes
+		 , relhasrules as hasrules
+		 , reltriggers as hastriggers
+		 , pg_class.oid
+		 , obj_description(pg_class.oid, 'pg_class') as table_description
+		 , relacl
+		 , CASE
+		   WHEN relkind = 'r' THEN
+			 'table'
+		   WHEN relkind = 's' THEN
+			 'special'
+		   ELSE
+			 'view'
+		   END as reltype
+		 , CASE
+		   WHEN relkind = 'v' THEN
+			 pg_get_viewdef(pg_class.relname)
+		   ELSE
+			 NULL
+		   END as view_definition
+	  FROM pg_class
+	 WHERE relkind in ('r', 's', 'v')
+	   AND relname NOT LIKE 'pg_%';
+	};
 
-    # - uses pg_class.oid
-    $sql_Columns = qq{
-    SELECT quote_ident(attname) as column_name
-         , attlen as column_length
-         , CASE
-           WHEN pg_type.typname = 'int4'
-                AND adsrc LIKE 'nextval(%' THEN
-             'serial'
-           WHEN pg_type.typname = 'int8'
-                AND adsrc LIKE 'nextval(%' THEN
-             'bigserial'
-           ELSE
-             format_type(atttypid, atttypmod)
-           END as column_type
-         , CASE
-           WHEN attnotnull IS TRUE THEN
-             'NOT NULL'::text
-           ELSE
-             ''::text
-           END as column_null
-         , CASE
-           WHEN pg_type.typname in ('int4', 'int8')
-                AND adsrc LIKE 'nextval(%' THEN
-             NULL
-           ELSE
-             adsrc
-           END as column_default
-         , col_description(attrelid, attnum) as column_description
-         , attnum
-      FROM pg_attribute 
-                 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
-      LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
-                                    AND pg_attribute.attnum = pg_attrdef.adnum)
-     WHERE attnum > 0
-       AND attrelid = ?;
-    };
+	# - uses pg_class.oid
+	$sql_Columns = qq{
+	SELECT quote_ident(attname) as column_name
+		 , attlen as column_length
+		 , CASE
+		   WHEN pg_type.typname = 'int4'
+				AND adsrc LIKE 'nextval(%' THEN
+			 'serial'
+		   WHEN pg_type.typname = 'int8'
+				AND adsrc LIKE 'nextval(%' THEN
+			 'bigserial'
+		   ELSE
+			 format_type(atttypid, atttypmod)
+		   END as column_type
+		 , CASE
+		   WHEN attnotnull IS TRUE THEN
+			 'NOT NULL'::text
+		   ELSE
+			 ''::text
+		   END as column_null
+		 , CASE
+		   WHEN pg_type.typname in ('int4', 'int8')
+				AND adsrc LIKE 'nextval(%' THEN
+			 NULL
+		   ELSE
+			 adsrc
+		   END as column_default
+		 , col_description(attrelid, attnum) as column_description
+		 , attnum
+	  FROM pg_attribute 
+				 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
+	  LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
+									AND pg_attribute.attnum = pg_attrdef.adnum)
+	 WHERE attnum > 0
+	   AND attrelid = ?;
+	};
 
-## 7.1 or earlier has a different description structure
 }
 else {
+	# 7.1 or earlier has a different description structure
 
-    $sql_Tables = qq{
-    SELECT quote_ident('public') as namespace
-         , quote_ident(relname) as tablename
-         , pg_get_userbyid(relowner) AS tableowner
-         , relhasindex as hasindexes
-         , relhasrules as hasrules
-         , reltriggers as hastriggers
-         , pg_class.oid
-         , obj_description(pg_class.oid) as table_description
-      FROM pg_class
-     WHERE (  relkind = 'r'::"char"
-           OR relkind = 's'::"char"
-           )
-       AND relname NOT LIKE 'pg_%';
-    };
+	$sql_Tables = qq{
+	SELECT quote_ident('public') as namespace
+		 , quote_ident(relname) as tablename
+		 , pg_get_userbyid(relowner) AS tableowner
+		 , relhasindex as hasindexes
+		 , relhasrules as hasrules
+		 , reltriggers as hastriggers
+		 , pg_class.oid
+		 , obj_description(pg_class.oid) as table_description
+		 , 'table' as reltype
+		 , NULL as view_definition
+	  FROM pg_class
+	 WHERE relkind IN ('r', 's')
+	   AND relname NOT LIKE 'pg_%';
+	};
 
-    # - uses pg_class.oid
-    $sql_Columns = qq{
-    SELECT quote_ident(attname) as column_name
-         , attlen as column_length
-         , CASE
-           WHEN pg_type.typname = 'int4'
-                AND adsrc LIKE 'nextval(%' THEN
-             'serial'
-           WHEN pg_type.typname = 'int8'
-                AND adsrc LIKE 'nextval(%' THEN
-             'bigserial'
-           ELSE
-             pg_catalog.format_type(atttypid, atttypmod)
-           END as column_type
-         , CASE
-           WHEN attnotnull IS TRUE THEN
-             'NOT NULL'::text
-           ELSE
-             ''::text
-           END as column_null
-         , CASE
-           WHEN pg_type.typname in ('int4', 'int8')
-                AND adsrc LIKE 'nextval(%' THEN
-             NULL
-           ELSE
-             adsrc
-           END as column_default
-         , description as column_description
-         , attnum
-      FROM pg_attribute 
-                 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
-      LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
-                                    AND pg_attribute.attnum = pg_attrdef.adnum)
-      LEFT OUTER JOIN pg_description ON (pg_description.objoid = pg_attribute.oid)
-     WHERE attnum > 0
-       AND attrelid = ?;
-    };
+	# - uses pg_class.oid
+	$sql_Columns = qq{
+	SELECT quote_ident(attname) as column_name
+		 , attlen as column_length
+		 , CASE
+		   WHEN pg_type.typname = 'int4'
+				AND adsrc LIKE 'nextval(%' THEN
+			 'serial'
+		   WHEN pg_type.typname = 'int8'
+				AND adsrc LIKE 'nextval(%' THEN
+			 'bigserial'
+		   ELSE
+			 format_type(atttypid, atttypmod)
+		   END as column_type
+		 , CASE
+		   WHEN attnotnull IS TRUE THEN
+			 'NOT NULL'::text
+		   ELSE
+			 ''::text
+		   END as column_null
+		 , CASE
+		   WHEN pg_type.typname in ('int4', 'int8')
+				AND adsrc LIKE 'nextval(%' THEN
+			 NULL
+		   ELSE
+			 adsrc
+		   END as column_default
+		 , description as column_description
+		 , attnum
+	  FROM pg_attribute 
+				 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
+	  LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
+									AND pg_attribute.attnum = pg_attrdef.adnum)
+	  LEFT OUTER JOIN pg_description ON (pg_description.objoid = pg_attribute.oid)
+	 WHERE attnum > 0
+	   AND attrelid = ?;
+	};
 }
 
-## New method of storing constraint keys
-my $sql_Primary_Keys;
+# Fetch the list of PRIMARY and UNIQUE keys
 if ($pgversion >= 70300)
 {
-    $sql_Primary_Keys = qq{
-    SELECT pg_catalog.quote_ident(conname) AS constraint_name
-         , pg_catalog.pg_get_indexdef(d.objid) AS constraint_definition
-         , CASE
-           WHEN contype = 'p' THEN
-             'PRIMARY KEY'
-           ELSE
-             'UNIQUE'
-           END as constraint_type
-         , conkey[2] is not null as multicolumn
-      FROM pg_catalog.pg_constraint AS c
-      JOIN pg_catalog.pg_depend AS d ON (d.refobjid = c.oid)
-     WHERE contype IN ('p', 'u')
+	$sql_Primary_Keys = qq{
+	SELECT pg_catalog.quote_ident(conname) AS constraint_name
+		 , pg_catalog.pg_get_indexdef(d.objid) AS constraint_definition
+		 , CASE
+		   WHEN contype = 'p' THEN
+			 'PRIMARY KEY'
+		   ELSE
+			 'UNIQUE'
+		   END as constraint_type
+	  FROM pg_catalog.pg_constraint AS c
+	  JOIN pg_catalog.pg_depend AS d ON (d.refobjid = c.oid)
+	 WHERE contype IN ('p', 'u')
 	   AND deptype = 'i'
-       AND conrelid = ?;
-    };
+	   AND conrelid = ?;
+	};
 
 } else {
-    # - uses pg_class.oid
-    $sql_Primary_Keys = qq{
-    SELECT quote_ident(i.relname) AS constraint_name
-         , pg_get_indexdef(pg_index.indexrelid) AS constraint_definition
-         , CASE
-           WHEN indisprimary THEN
-             'PRIMARY KEY'
-           ELSE
-             'UNIQUE'
-           END as constraint_type
-         , EXISTS (SELECT TRUE
-              FROM pg_index x
-                 , pg_attribute a
-                 , pg_class c2
-                 , pg_class i2 
-             WHERE a.attrelid = i.oid
-               AND c2.oid = x.indrelid
-               AND i2.oid = x.indexrelid
-               AND x.indisunique IS TRUE
-               AND i2.oid = i.oid
-           ) as multicolumn
-      FROM pg_index
-         , pg_class as i 
-     WHERE i.oid = pg_index.indexrelid
-       AND pg_index.indisunique
-       AND pg_index.indrelid = ?;
-    };
+	# - uses pg_class.oid
+	$sql_Primary_Keys = qq{
+	SELECT quote_ident(i.relname) AS constraint_name
+		 , pg_get_indexdef(pg_index.indexrelid) AS constraint_definition
+		 , CASE
+		   WHEN indisprimary THEN
+			 'PRIMARY KEY'
+		   ELSE
+			 'UNIQUE'
+		   END as constraint_type
+	  FROM pg_index
+		 , pg_class as i 
+	 WHERE i.oid = pg_index.indexrelid
+	   AND pg_index.indisunique
+	   AND pg_index.indrelid = ?;
+	};
 }
 
+# FOREIGN KEY fetch
+#
+# Don't return the constraint name if it was automatically generated by
+# PostgreSQL.  The $N (where N is an integer) is not a descriptive enough
+# piece of information to be worth while including in the various outputs.
 if ( $pgversion >= 70300 ) {
-    $sql_Foreign_Keys = qq{
-    SELECT pg_constraint.oid
-         , pg_catalog.quote_ident(nspname) as namespace
-         , pg_catalog.quote_ident(conname) as constraint_name
-         , conkey as constraint_key
-         , confkey as constraint_fkey
-         , confrelid as foreignrelid
-      FROM pg_catalog.pg_constraint
-      JOIN pg_catalog.pg_class ON (pg_class.oid = conrelid)
-      JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-     WHERE contype = 'f'
-       AND conrelid = ?;
-    };
+	$sql_Foreign_Keys = qq{
+	SELECT pg_constraint.oid
+		 , pg_catalog.quote_ident(pg_namespace.nspname) AS namespace
+		 , CASE WHEN substring(pg_constraint.conname FROM 1 FOR 1) = '\$' THEN ''
+		   ELSE pg_catalog.quote_ident(pg_constraint.conname)
+		   END AS constraint_name
+		 , conkey AS constraint_key
+		 , confkey AS constraint_fkey
+		 , confrelid AS foreignrelid
+	  FROM pg_catalog.pg_constraint
+	  JOIN pg_catalog.pg_class ON (pg_class.oid = conrelid)
+	  JOIN pg_catalog.pg_class AS pc ON (pc.oid = confrelid)
+	  JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
+	  JOIN pg_catalog.pg_namespace AS pn ON (pn.oid = pc.relnamespace)
+	 WHERE contype = 'f'
+	   AND conrelid = ?
+	   AND pg_namespace.nspname ~ '$schemapattern'
+	   AND pn.nspname ~ '$schemapattern';
+	};
 
-    $sql_Foreign_Key_Arg = qq{
-     SELECT pg_catalog.quote_ident(attname) as attribute_name
-          , pg_catalog.quote_ident(relname) as relation_name
-          , pg_catalog.quote_ident(nspname) as namespace
-       FROM pg_catalog.pg_attribute
-       JOIN pg_catalog.pg_class ON (pg_class.oid = attrelid)
-       JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-      WHERE attrelid = ?
-        AND attnum = ?;
-    };
+	$sql_Foreign_Key_Arg = qq{
+	 SELECT pg_catalog.quote_ident(attname) AS attribute_name
+		  , pg_catalog.quote_ident(relname) AS relation_name
+		  , pg_catalog.quote_ident(nspname) AS namespace
+	   FROM pg_catalog.pg_attribute
+	   JOIN pg_catalog.pg_class ON (pg_class.oid = attrelid)
+	   JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
+	  WHERE attrelid = ?
+		AND attnum = ?;
+	};
 }
 else {
+	# - uses pg_class.oid
+	$sql_Foreign_Keys = q{
+	SELECT oid
+		 , quote_ident('public') as namespace
+		 , CASE WHEN substring(tgname from 1 for 1) = '$' THEN ''
+		   ELSE quote_ident(tgname)
+		   END AS constraint_name
+		 , tgnargs AS number_args
+		 , tgargs AS args
+	  FROM pg_trigger
+	 WHERE tgisconstraint = TRUE
+	   AND tgtype = 21
+	   AND tgrelid = ?;
+	};
 
-    # - uses pg_class.oid
-    $sql_Foreign_Keys = qq{
-    SELECT oid
-         , quote_ident('public') as namespace
-         , quote_ident(tgname) as constraint_name
-         , tgnargs as number_args
-         , tgargs as args
-      FROM pg_trigger
-     WHERE tgisconstraint = TRUE
-       AND tgtype = 21
-       AND tgrelid = ?;
-    };
-
-    $sql_Foreign_Key_Arg = qq{SELECT TRUE WHERE ? = 0 and ? = 0;};
+	$sql_Foreign_Key_Arg = qq{SELECT TRUE WHERE ? = 0 and ? = 0;};
 }
 
-# - uses pg_class.oid
+# Fetch CHECK constraints
 if ( $pgversion >= 70300 ) {
-    $sql_Constraint = qq{
-    SELECT 'CHECK ' || pg_catalog.substr(consrc, 2, length(consrc) - 2) as constraint_source
-         , pg_catalog.quote_ident(conname) as constraint_name
-      FROM pg_constraint
-     WHERE conrelid = ?
-       AND contype = 'c';
-    };
+	$sql_Constraint = qq{
+	SELECT 'CHECK ' || pg_catalog.substr(consrc, 2, length(consrc) - 2) AS constraint_source
+		 , pg_catalog.quote_ident(conname) AS constraint_name
+	  FROM pg_constraint
+	 WHERE conrelid = ?
+	   AND contype = 'c';
+	};
 }
 else {
-    $sql_Constraint = qq{
-    SELECT 'CHECK ' || substr(rcsrc, 2, length(rcsrc) - 2) as constraint_source
-         , quote_ident(rcname) as constraint_name
-      FROM pg_relcheck
-     WHERE rcrelid = ?;
-    };
+	$sql_Constraint = qq{
+	SELECT 'CHECK ' || substr(rcsrc, 2, length(rcsrc) - 2) AS constraint_source
+		 , quote_ident(rcname) AS constraint_name
+	  FROM pg_relcheck
+	 WHERE rcrelid = ?;
+	};
 }
 
 # Query for function information
 if ( $pgversion >= 70300 ) {
-    $sql_Function = qq{
-	  SELECT pg_catalog.quote_ident(proname) as function_name
-           , pg_catalog.quote_ident(nspname) as namespace
-	       , pg_catalog.quote_ident(lanname) as language_name
-	       , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') as comment
-           , proargtypes as function_args
-        FROM pg_catalog.pg_proc
-        JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
-        JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
-       WHERE pg_namespace.nspname != '$system_schema';
+	$sql_Function = qq{
+	  SELECT pg_catalog.quote_ident(proname) AS function_name
+		   , pg_catalog.quote_ident(nspname) AS namespace
+		   , pg_catalog.quote_ident(lanname) AS language_name
+		   , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
+		   , proargtypes AS function_args
+		FROM pg_catalog.pg_proc
+		JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
+		JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
+	   WHERE pg_namespace.nspname !~ '$system_schema_list'
+		 AND pg_namespace.nspname ~ '$schemapattern'
+	     AND proname != 'plpgsql_call_handler';
 	};
 
-    $sql_FunctionArg = qq{
-	  SELECT pg_catalog.quote_ident(nspname) as namespace
-	       , pg_catalog.format_type(pg_type.oid, typlen) as type_name
-	    FROM pg_catalog.pg_type
-	    JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
-       WHERE pg_type.oid = ?;
+	$sql_FunctionArg = qq{
+	  SELECT pg_catalog.quote_ident(nspname) AS namespace
+		   , pg_catalog.format_type(pg_type.oid, typlen) AS type_name
+		FROM pg_catalog.pg_type
+		JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
+	   WHERE pg_type.oid = ?;
 	};
 }
 else {
+	$sql_Function = qq{
+	SELECT quote_ident(proname) AS function_name
+		 , quote_ident('public') AS namespace
+		 , quote_ident(lanname) AS language_name
+		 , description AS comment
+		 , proargtypes AS function_args
+	  FROM pg_proc
+	  JOIN pg_language ON (pg_language.oid = prolang)
+	  LEFT OUTER JOIN pg_description ON (objoid = pg_proc.oid)
+	 WHERE pg_proc.oid > 16000
+	   AND proname != 'plpgsql_call_handler';
+	 };
 
-    # Don't feel like writing these out at the moment.
-    # Use junk placeholders.
-    $sql_Function = qq{
-    SELECT quote_ident(proname) as function_name
-         , quote_ident('public') as namespace
-         , quote_ident(lanname) as language_name
-         , description as comment
-         , proargtypes as function_args
-      FROM pg_proc
-      JOIN pg_language ON (pg_language.oid = prolang)
-      LEFT OUTER JOIN pg_description ON (objoid = pg_proc.oid)
-     WHERE pg_proc.oid > 16000
-       AND proname != 'plpgsql_call_handler';
-     };
-
-    $sql_FunctionArg = qq{
-    SELECT quote_ident('public') as namespace
-         , format_type(pg_type.oid, typlen) as type_name
-      FROM pg_type
-     WHERE pg_type.oid = ?;
-    };
+	$sql_FunctionArg = qq{
+	SELECT quote_ident('public') AS namespace
+		 , format_type(pg_type.oid, typlen) AS type_name
+	  FROM pg_type
+	 WHERE pg_type.oid = ?;
+	};
 }
 
+# Fetch schema information.
 if ( $pgversion >= 70300 ) {
-    $sql_Schema = qq{
-    SELECT pg_catalog.obj_description(oid, 'pg_namespace') as comment
-         , pg_catalog.quote_ident(nspname) as namespace
-      FROM pg_catalog.pg_namespace;
-    };
+	$sql_Schema = qq{
+	SELECT pg_catalog.obj_description(oid, 'pg_namespace') AS comment
+		 , pg_catalog.quote_ident(nspname) as namespace
+	  FROM pg_catalog.pg_namespace;
+	};
 }
 else {
-    $sql_Schema = qq{SELECT TRUE WHERE TRUE = FALSE;};
+	# In PostgreSQL 7.2 and prior, schemas were not a part of the system.
+	# Dummy query returns no rows to prevent added logic later on.
+	$sql_Schema = qq{SELECT TRUE WHERE TRUE = FALSE;};
 }
 
+# Fetch the description of the database
 if ( $pgversion >= 70300 ) {
-    $sql_Database = qq{
-    SELECT pg_catalog.obj_description(oid, 'pg_database') as comment
-      FROM pg_catalog.pg_database
-     WHERE datname = '$database';
-    };
+	$sql_Database = qq{
+	SELECT pg_catalog.obj_description(oid, 'pg_database') as comment
+	  FROM pg_catalog.pg_database
+	 WHERE datname = '$database';
+	};
 }
 elsif ($pgversion == 70200 ) {
-    $sql_Database = qq{
-    SELECT obj_description(oid, 'pg_database') as comment
-      FROM pg_database
-     WHERE datname = '$database';
-    };
+	$sql_Database = qq{
+	SELECT obj_description(oid, 'pg_database') as comment
+	  FROM pg_database
+	 WHERE datname = '$database';
+	};
 }
 else {
-    $sql_Database = qq{ SELECT TRUE as comment WHERE TRUE = FALSE;};
+	# In PostgreSQL 7.1, the database did not have comment support
+	$sql_Database = qq{ SELECT TRUE as comment WHERE TRUE = FALSE;};
 }
 
-my $sth_Database        = $dbh->prepare($sql_Database);
-my $sth_Tables          = $dbh->prepare($sql_Tables);
-my $sth_Foreign_Keys    = $dbh->prepare($sql_Foreign_Keys);
-my $sth_Foreign_Key_Arg = $dbh->prepare($sql_Foreign_Key_Arg);
-my $sth_Primary_Keys    = $dbh->prepare($sql_Primary_Keys);
-my $sth_Columns         = $dbh->prepare($sql_Columns);
-my $sth_Constraint      = $dbh->prepare($sql_Constraint);
-my $sth_Function        = $dbh->prepare($sql_Function);
-my $sth_FunctionArg     = $dbh->prepare($sql_FunctionArg);
-my $sth_Schema          = $dbh->prepare($sql_Schema);
+my $sth_Columns			= $dbh->prepare($sql_Columns);
+my $sth_Constraint		= $dbh->prepare($sql_Constraint);
+my $sth_Database		= $dbh->prepare($sql_Database);
+my $sth_Foreign_Keys	= $dbh->prepare($sql_Foreign_Keys);
+my $sth_Foreign_Key_Arg	= $dbh->prepare($sql_Foreign_Key_Arg);
+my $sth_Function		= $dbh->prepare($sql_Function);
+my $sth_FunctionArg		= $dbh->prepare($sql_FunctionArg);
+my $sth_Primary_Keys	= $dbh->prepare($sql_Primary_Keys);
+my $sth_Schema			= $dbh->prepare($sql_Schema);
+my $sth_Tables			= $dbh->prepare($sql_Tables);
 
 my %structure;
 my %struct;
@@ -595,1693 +653,887 @@ my %struct;
 $sth_Database->execute();
 my $dbinfo = $sth_Database->fetchrow_hashref;
 if ( defined($dbinfo) ) {
-    $struct{'DATABASE'}{$database}{'COMMENT'} = $dbinfo->{'comment'};
+	$struct{'DATABASE'}{$database}{'COMMENT'} = $dbinfo->{'comment'};
 }
 
 # Fetch tables and all things bound to tables
 $sth_Tables->execute();
 while ( my $tables = $sth_Tables->fetchrow_hashref ) {
-    my $table_oid  = $tables->{'oid'};
-    my $table_name = $tables->{'tablename'};
+	my $reloid  = $tables->{'oid'};
+	my $relname = $tables->{'tablename'};
 
-    my $group = $tables->{'namespace'};
+	my $group = $tables->{'namespace'};
 
-  EXPRESSIONFOUND:
+	EXPRESSIONFOUND:
 
-    ## Store permissions
-    my $acl = $tables->{'relacl'};
+	# Store permissions
+	my $acl = $tables->{'relacl'};
 
-    # Empty acl groups cause serious issues.
-    $acl ||= '';
+	# Empty acl groups cause serious issues.
+	$acl ||= '';
+	
+	# Strip array forming 'junk'.
+	$acl =~ s/^{//g;
+	$acl =~ s/}$//g;
+	$acl =~ s/"//g;
 
-    # Strip array forming 'junk'.
-    $acl =~ s/^{//g;
-    $acl =~ s/}$//g;
-    $acl =~ s/"//g;
+	foreach ( split ( /\,/, $acl ) ) {
+		my ( $user, $permissions ) = split ( /=/, $_ );
 
-    foreach ( split ( /\,/, $acl ) ) {
-        my ( $user, $permissions ) = split ( /=/, $_ );
+		if ( defined($permissions) ) {
+			if ( $user eq '' ) {
+				$user = 'PUBLIC';
+			}
 
-        if ( defined($permissions) ) {
-            if ( $user eq '' ) {
-                $user = 'PUBLIC';
-            }
+			# Break down permissions to individual flags
+			if ( $permissions =~ /a/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'INSERT'} = 1;
+			}
 
-            # Break down permissions to individual flags
-            if ( $permissions =~ /a/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'INSERT'} = 1;
-            }
+			if ( $permissions =~ /r/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'SELECT'} = 1;
+			}
 
-            if ( $permissions =~ /r/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'SELECT'} = 1;
-            }
+			if ( $permissions =~ /w/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'UPDATE'} = 1;
+			}
 
-            if ( $permissions =~ /w/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'UPDATE'} = 1;
-            }
+			if ( $permissions =~ /d/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'DELETE'} = 1;
+			}
 
-            if ( $permissions =~ /d/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'DELETE'} = 1;
-            }
+			if ( $permissions =~ /R/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'RULE'} = 1;
+			}
 
-            if ( $permissions =~ /R/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'RULE'} = 1;
-            }
+			if ( $permissions =~ /x/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'REFERENCES'} = 1;
+			}
 
-            if ( $permissions =~ /x/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'REFERENCES'} = 1;
-            }
+			if ( $permissions =~ /t/ ) {
+				$structure{$group}{$relname}{'ACL'}{$user}{'TRIGGER'} = 1;
+			}
+		}
+	}
 
-            if ( $permissions =~ /t/ ) {
-                $structure{$group}{$table_name}{'ACL'}{$user}{'TRIGGER'} = 1;
-            }
-        }
-    }
+	# Store the relation type
+	$structure{$group}{$relname}{'TYPE'} = $tables->{'reltype'};
 
-    ## Store table description
-    $structure{$group}{$table_name}{'DESCRIPTION'} =
-      $tables->{'table_description'};
+	# Store table description
+	$structure{$group}{$relname}{'DESCRIPTION'} = $tables->{'table_description'};
 
-    ## Store constraints
-    $sth_Constraint->execute($table_oid);
-    while ( my $cols = $sth_Constraint->fetchrow_hashref ) {
-        my $constraint_name = $cols->{'constraint_name'};
-        $structure{$group}{$table_name}{'CONSTRAINT'}{$constraint_name} =
-          $cols->{'constraint_source'};
+	# Store the view definition
+	$structure{$group}{$relname}{'VIEW_DEF'} = $tables->{'view_definition'};
 
-        #    print "        $constraint_name\n";
-    }
+	# Store constraints
+	$sth_Constraint->execute($reloid);
+	while ( my $cols = $sth_Constraint->fetchrow_hashref ) {
+		my $constraint_name = $cols->{'constraint_name'};
+		$structure{$group}{$relname}{'CONSTRAINT'}{$constraint_name} =
+		  $cols->{'constraint_source'};
+	}
 
-    $sth_Columns->execute($table_oid);
-    my $i = 1;
-    while ( my $cols = $sth_Columns->fetchrow_hashref ) {
-        my $column_name = $cols->{'column_name'};
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'ORDER'} =
-          $cols->{'attnum'};
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'PRIMARY KEY'} =
-          0;
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'FK'}   = '';
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} =
-          $cols->{'column_type'};
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'NULL'} =
-          $cols->{'column_null'};
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DESCRIPTION'} =
-          $cols->{'column_description'};
-        $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'} =
-          $cols->{'column_default'};
+	$sth_Columns->execute($reloid);
+	my $i = 1;
+	while ( my $cols = $sth_Columns->fetchrow_hashref ) {
+		my $column_name = $cols->{'column_name'};
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'ORDER'} =
+		  $cols->{'attnum'};
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'PRIMARY KEY'} =
+		  0;
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'FKTABLE'}   = '';
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'TYPE'} =
+		  $cols->{'column_type'};
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'NULL'} =
+		  $cols->{'column_null'};
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'DESCRIPTION'} =
+		  $cols->{'column_description'};
+		$structure{$group}{$relname}{'COLUMN'}{$column_name}{'DEFAULT'} =
+		  $cols->{'column_default'};
+	}
 
-        #    print "        $table_name -> $column_name\n";
-        #    print $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} ."\n\n";
-    }
-
-    $sth_Primary_Keys->execute($table_oid);
-    while ( my $pricols = $sth_Primary_Keys->fetchrow_hashref ) {
-        my $multicolumn = $pricols->{'multicolumn'};
-        my $index_type    = $pricols->{'constraint_type'};
-        my $index_name    = $pricols->{'constraint_name'};
-		my $indexdef	  = $pricols->{'constraint_definition'};
+	# Pull out both PRIMARY and UNIQUE keys based on the supplied query
+	# and the relation OID.
+	#
+	# Since there may be multiple UNIQUE indexes on a table, we append a
+	# number to the end of the the UNIQUE keyword which shows that they
+	# are a part of a related definition.  I.e UNIQUE_1 goes with UNIQUE_1
+	#
+	$sth_Primary_Keys->execute($reloid);
+	my $unqgroup = 0;
+	while ( my $pricols = $sth_Primary_Keys->fetchrow_hashref ) {
+		my $index_type = $pricols->{'constraint_type'};
+		my $con		= $pricols->{'constraint_name'};
+		my $indexdef   = $pricols->{'constraint_definition'};
 
 		# Fetch the column list
 		my $column_list = $indexdef;
 		$column_list =~ s/.*\(([^)]+)\).*/$1/g;
 
-		# Override multicolumn with a check for commas
+		# Split our column list and deal with all PRIMARY KEY fields
 		my @collist = split(',', $column_list);
 
-		$multicolumn = $#collist;
+		# Store the column number in the indextype field.  Anything > 0 indicates
+		# the column has this type of constraint applied to it.
+		my $column;
+		my $currentcol = $#collist + 1;
+		my $numcols = $#collist + 1;
 
-        if ( $multicolumn == 0 ) {
-            $structure{$group}{$table_name}{'COLUMN'}{$column_list}
-              {$index_type} = 1;
-        }
-        else {
+		# Bump group number if there are two or more columns
+		if ($numcols >= 2 && $index_type eq 'UNIQUE') {
+			$unqgroup++;
+		}
 
-			$structure{$group}{$table_name}{'CONSTRAINT'}{$index_name} =
-				"$index_type ($column_list)";
-        }
+		# Record the data to the structure.
+		while ($column = pop(@collist) ) {
+			$column =~ s/\s$//;
+			$column =~ s/^\s//;
 
-        #    print "   PK	$index_type	$column_number	$table_name	$column_name\n";
-    }
-    $sth_Foreign_Keys->execute($table_oid);
-    while ( my $forcols = $sth_Foreign_Keys->fetchrow_hashref ) {
-        my $column_oid      = $forcols->{'oid'};
-        my $constraint_name = $forcols->{'constraint_name'};
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} = $index_type;
 
-        if ( $pgversion >= 70300 ) {
-            my $fkey   = $forcols->{'constraint_fkey'};
-            my $keys   = $forcols->{'constraint_key'};
-            my $frelid = $forcols->{'foreignrelid'};
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'COLNUM'} = $currentcol--;
 
-            $fkey =~ s/^{//g;
-            $fkey =~ s/}$//g;
-            $fkey =~ s/"//g;
+			# Record group number only when a multi-column constraint is involved
+			if ($numcols >= 2 && $index_type eq 'UNIQUE') {
+				$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'} = $unqgroup;
+			}
+		}
+	}
 
-            $keys =~ s/^{//g;
-            $keys =~ s/}$//g;
-            $keys =~ s/"//g;
+	# FOREIGN KEYS like UNIQUE indexes can appear several times in a table in multi-column
+	# format. We use the same trick to record a numeric association to the foreign key
+	# reference.
+	#
+	$sth_Foreign_Keys->execute($reloid);
+	my $fkgroup = 0;
+	while (my $forcols = $sth_Foreign_Keys->fetchrow_hashref)
+	{
+		my $column_oid	  = $forcols->{'oid'};
+		my $con = $forcols->{'constraint_name'};
 
-            my @keyset  = split ( /,/, $keys );
-            my @fkeyset = split ( /,/, $fkey );
+		# Declare variables for dataload
+		my @keylist;
+		my @fkeylist;
+		my $fgroup;
+		my $ftable;
 
-            my $count   = 0;
-            my $keylist = '';
-            foreach my $k (@keyset) {
-                $sth_Foreign_Key_Arg->execute( $table_oid, $k );
+		if ($pgversion >= 70300) {
+			my $fkey   = $forcols->{'constraint_fkey'};
+			my $keys   = $forcols->{'constraint_key'};
+			my $frelid = $forcols->{'foreignrelid'};
 
-                my $row = $sth_Foreign_Key_Arg->fetchrow_hashref;
+			# Since decent array support was not added to 7.4, and we want to support
+			# 7.3 as well, we parse the text version of the array by hand rather than
+			# combining this and Foreign_Key_Arg query into a single query.
+			$fkey =~ s/^{//g;
+			$fkey =~ s/}$//g;
+			$fkey =~ s/"//g;
 
-                if ( $count >= 1 ) {
-                    $keylist .= ',';
-                }
-                $keylist .= $row->{'attribute_name'};
-                $count++;
-            }
+			$keys =~ s/^{//g;
+			$keys =~ s/}$//g;
+			$keys =~ s/"//g;
 
-            my $fkeylist = '';
-            my $fgroup;
-            my $ftable;
-            my $fcount = 0;
-            foreach my $k (@fkeyset) {
-                $sth_Foreign_Key_Arg->execute( $frelid, $k );
+			my @keyset  = split (/,/, $keys);
+			my @fkeyset = split (/,/, $fkey);
 
-                my $row = $sth_Foreign_Key_Arg->fetchrow_hashref;
+			# Convert the list of column numbers into column names for the
+			# local side.
+			foreach my $k (@keyset)
+			{
+				$sth_Foreign_Key_Arg->execute($reloid, $k);
 
-                if ( $fcount >= 1 ) {
-                    $fkeylist .= ', ';
-                }
-                $fkeylist .= $row->{'attribute_name'};
-                $fgroup .= $row->{'namespace'};
-                $ftable .= $row->{'relation_name'};
-                $fcount++;
-            }
+				my $row = $sth_Foreign_Key_Arg->fetchrow_hashref;
 
-            die "FKEY $constraint_name Broken" if $fcount != $count;
-            if ( $count == 0 ) {
-                die "FKEY $constraint_name Broken";
-            }
-            elsif ( $count == 1 ) {
-                $structure{$group}{$table_name}{'COLUMN'}{$keylist}{'FK'} =
-                  "$ftable";    #.$fcolumn_name";
-                $structure{$group}{$table_name}{'COLUMN'}{$keylist}{'FKGROUP'} =
-                  "$fgroup";
-                $structure{$group}{$table_name}{'COLUMN'}{$keylist}
-                  {'FK-COL NAME'} = "$fkeylist";
-            }
-            else {
-                $structure{$group}{$table_name}{'CONSTRAINT'}
-                  {$constraint_name} =
-				"FOREIGN KEY ($keylist)".
-				" REFERENCES $fgroup.$ftable ($fkeylist)";
-            }
-        }
-        else {
-            my $nargs = $forcols->{'number_args'};
-            my $args  = $forcols->{'args'};
+				push(@keylist, $row->{'attribute_name'});
+			}
 
-            if ( $nargs == 6 ) {
-                my ( $keyname, $table, $ftable, $unspecified, $lcolumn_name,
-                    $fcolumn_name )
-                  = split ( /\000/, $args );
+			# Convert the list of columns numbers into column names for the
+			# referenced side. Grab the table and namespace while we're here.
+			foreach my $k (@fkeyset)
+			{
+				$sth_Foreign_Key_Arg->execute($frelid, $k);
 
-                # Account for old versions which don't handle NULL but instead return a string
-                if ( !defined($ftable) ) {
-                    (
-                        $keyname, $table, $ftable, $unspecified, $lcolumn_name,
-                        $fcolumn_name
-                      )
-                      = split ( /\\000/, $args );
-                }
+				my $row = $sth_Foreign_Key_Arg->fetchrow_hashref;
 
-                $structure{$group}{$table_name}{'COLUMN'}{$lcolumn_name}{'FK'} =
-                  "$ftable";    #.$fcolumn_name";
-                $structure{$group}{$table_name}{'COLUMN'}{$lcolumn_name}
-                  {'FK-COL NAME'} = "$fcolumn_name";
-                $structure{$group}{$table_name}{'COLUMN'}{$lcolumn_name}
-                  {'FKGROUP'} = $system_schema;
+				push(@fkeylist, $row->{'attribute_name'});
+				$fgroup = $row->{'namespace'};
+				$ftable = $row->{'relation_name'};
+			}
 
-                # print "   FK   $lcolumn_name -> $ftable.$fcolumn_name\n";
-            }
-            elsif ( ( $nargs - 6 ) % 2 == 0 ) {
-                my ( $keyname, $table, $ftable, $unspecified, $lcolumn_name,
-                    $fcolumn_name, @junk )
-                  = split ( /\000/, $args );
+			# Deal with common catalog issues.
+			die "FKEY $con Broken -- fix your PostgreSQL installation" if $#keylist != $#fkeylist;
+		}
+		else {
+			my $keyname;		# Throw away
+			my $table;			# Throw away
+			my $unspecified;	# Throw away
+			my @columns;
 
-                # Account for old versions which don't handle NULL but instead return a string
-                if ( !defined($ftable) ) {
-                    (
-                        $keyname, $table, $ftable, $unspecified, $lcolumn_name,
-                        $fcolumn_name, @junk
-                      )
-                      = split ( /\\000/, $args );
-                }
+			my $nargs = $forcols->{'number_args'};
+			my $args  = $forcols->{'args'};
 
-                my $key_cols = "$lcolumn_name";
-                my $ref_cols = "$fcolumn_name";
+			# This database doesn't support namespaces, so use the default
+			$fgroup = $system_schema;
 
-                while ( $lcolumn_name = pop (@junk)
-                    and $fcolumn_name = pop (@junk) )
-                {
+			($keyname, $table, $ftable, $unspecified, @columns) = split(/\000/, $args);
 
-                    $key_cols .= ", $lcolumn_name";
-                    $ref_cols .= ", $fcolumn_name";
-                }
+			# Account for old versions which don't handle NULL but instead return a string
+			# of the escape sequence
+			if (!defined($ftable)) {
+				($keyname, $table, $ftable, $unspecified, @columns) = split (/\\000/, $args);
+			}
 
-                $structure{$group}{$table_name}{'CONSTRAINT'}
-                  {$constraint_name} =
-                  "FOREIGN KEY ($key_cols) REFERENCES $ftable($ref_cols)";
-            }
-        }
-    }
+			# Push the column list stored into @columns into the key and fkey lists
+			while (my $column = pop (@columns)
+				and my $fcolumn = pop (@columns))
+			{
+				push(@keylist, $column);
+				push(@fkeylist, $fcolumn);
+			}
+		}
+
+		#
+		# Load up the array based on the information discovered using the information
+		# retrieval methods above.
+		#
+		my $numcols = $#keylist + 1;
+		my $currentcol = $#keylist + 1;
+
+		# Bump group number if there are two or more columns involved
+		if ($numcols >= 2) {
+			$fkgroup++;
+		}
+
+		# Record the foreign key to structure
+		while (my $column = pop(@keylist)
+			and my $fkey = pop(@fkeylist))
+		{
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} = 'FOREIGN KEY';
+	
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'COLNUM'} = $currentcol--;
+
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'FKTABLE'} = $ftable;
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'FKSCHEMA'} = $fgroup;
+			$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'FK-COL NAME'} = $fkey;
+
+			# Record group number only when a multi-column constraint is involved
+			if ($numcols >= 2) {
+				$structure{$group}{$relname}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'} = $fkgroup;
+			}
+		}
+	}
 }
 
-####
 # Function Handling
 $sth_Function->execute();
 while ( my $functions = $sth_Function->fetchrow_hashref ) {
-    my $functionname = $functions->{'function_name'} . '( ';
-    my $group        = $functions->{'namespace'};
-    my $comment      = $functions->{'comment'};
-    my $functionargs = $functions->{'function_args'};
+	my $functionname = $functions->{'function_name'} . '( ';
+	my $group		= $functions->{'namespace'};
+	my $comment	  = $functions->{'comment'};
+	my $functionargs = $functions->{'function_args'};
 
-    my @types = split ( ' ', $functionargs );
-    my $count = 0;
+	my @types = split ( ' ', $functionargs );
+	my $count = 0;
 
-    foreach my $type (@types) {
-        $sth_FunctionArg->execute($type);
+	foreach my $type (@types) {
+		$sth_FunctionArg->execute($type);
 
-        my $hash = $sth_FunctionArg->fetchrow_hashref;
+		my $hash = $sth_FunctionArg->fetchrow_hashref;
 
-        if ( $count > 0 ) {
-            $functionname .= ', ';
-        }
+		if ( $count > 0 ) {
+			$functionname .= ', ';
+		}
 
-        if ( $hash->{'namespace'} ne $system_schema ) {
-            $functionname .= $hash->{'namespace'} . '.';
-        }
-        $functionname .= $hash->{'type_name'};
-        $count++;
-    }
-    $functionname .= ' )';
+		if ( $hash->{'namespace'} ne $system_schema ) {
+			$functionname .= $hash->{'namespace'} . '.';
+		}
+		$functionname .= $hash->{'type_name'};
+		$count++;
+	}
+	$functionname .= ' )';
 
-    $struct{'FUNCTION'}{$group}{$functionname}{'COMMENT'} = $comment;
+	$struct{'FUNCTION'}{$group}{$functionname}{'COMMENT'} = $comment;
 }
 
-####
-# Schema
+# Deal with the Schema
 $sth_Schema->execute();
 while ( my $schema = $sth_Schema->fetchrow_hashref ) {
-    my $comment   = $schema->{'comment'};
-    my $namespace = $schema->{'namespace'};
+	my $comment   = $schema->{'comment'};
+	my $namespace = $schema->{'namespace'};
 
-    $struct{'SCHEMA'}{$namespace}{'COMMENT'} = $comment;
+	$struct{'SCHEMA'}{$namespace}{'COMMENT'} = $comment;
 }
 
-if ( $do_uml == 1 ) {
-    &write_uml_structure();
-}
+# Write out *ALL* templates
+&write_using_templates();
 
-if ($do_dot) {
-    &write_dot_file_ports();
-}
-
-if ( $do_index == 1 ) {
-    &write_index_structure();
-}
-
-if ( $do_docbook == 1 ) {
-    &write_docbook_structure();
-}
-
-#####################################
-## write_index_structure
-##
-sub write_index_structure {
-    sysopen( FH, $index_outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644 )
-      or die "Can't open $index_outputfile: $!";
-
-    print FH << "EoF";
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
-   "http://www.w3.org/TR/html4/strict.dtd">
-<html>
-  <head>
-    <title>Index for $database</title>
-    <style type="text/css">
-	BODY {
-		color:	#000000; 
-		background-color: #FFFFFF;
-		font-family: Helvetica, sans-serif; 
-	}
-
-	P {
-		margin-top: 5px;
-		margin-bottom: 5px;
-	}
-
-	P.w3ref {
-		font-size: 8pt;
-		font-style: italic;
-		text-align: right;
-	}
-
-	P.detail {
-		font-size: 10pt;
-	}
-
-	.error {
-		color: #FFFFFF;
-		background-color: #FF0000;
-	}
-
-	H1, H2, H3, H4, H5, H6 {
-	}
-
-	OL {
-		list-style-type: upper-alpha;
-	}
-
-	UL.topic {
-		list-style-type: upper-alpha;
-	}
-
-	LI.topic {
-		font-weight : bold;
-	}
-
-	HR {
-		color: #00FF00;
-		background-color: #808080;
-	}
-
-	TABLE {
-		border-width: medium;
-		padding: 3px;
-		background-color: #000000;
-		width: 90%;
-	}
-
-	CAPTION {
-		text-transform: capitalize;
-		font-weight : bold;
-		font-size: 14pt;
-	}
-
-	TH {
-		color: #FFFFFF;
-		background-color: #000000;
-		text-align: left;
-	}
-
-	TR {
-		color: #000000;
-		background-color: #000000;
-		vertical-align: top;
-	}
-
-	TR.tr0 {
-		background-color: #F0F0F0;
-	}
-
-	TR.tr1 {
-		background-color: #D8D8D8;
-	}
-
-	TD {
-		font-size: 12pt;
-	}
-
-	TD.col0 {
-		font-weight : bold;
-		width: 20%;
-	}
-
-	TD.col1 {
-		font-style: italic;
-		width: 15%;
-	}
-
-	TD.col2 {
-		font-size: 12px;
-	}
-    </style>
-    <link rel="stylesheet" type="text/css" media="all" href="all.css">
-    <link rel="stylesheet" type="text/css" media="screen" href="screen.css">
-    <link rel="stylesheet" type="text/css" media="print" href="print.css">
-    <meta HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=iso-8859-1">
-  </head>
-  <body>
-EoF
-
-    ## Primary Index
-	my @timestamp = localtime();
-	print FH '<p>'. xml_safe_chars($struct{'DATABASE'}{$database}{'COMMENT'}) .'<br><br>'.
-			 xml_safe_chars('Dumped on '. ($timestamp[5]+1900) .'-'.
-						   ($timestamp[4]+1) .'-'.
-			 			   $timestamp[3]).
-		     '.</p>';
-    print FH '<a name="index"><h1>Index of database - '.
-			 $database .'</h1><ul>';
-
-    foreach my $group ( sort keys %structure ) {
-        print FH '<li><a name="group_' . $group . '">' . xml_safe_chars($group).
-				 '</a></li><ul>';
-
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-            print FH '<li><a href="#table_' . $table . '">'. xml_safe_chars($table)
-              . '</a></li>';
-        }
-
-        foreach my $function ( sort keys %{ $struct{'FUNCTION'}{$group} } ) {
-            print FH '<li><a href="#function_'
-              . $function . '">'
-              . xml_safe_chars($function)
-              . '</a></li>';
-        }
-
-        print FH '</ul>';
-    }
-    print FH '</ul>';
-
-    ## Group Creation
-    foreach my $group ( sort keys %structure ) {
-
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-            my $tr = 0;    # TableRow class for color alterning in rows.
-            print FH '<hr><h2>Table: ';
-
-            print FH '<a href="#group_' . $group . '">'. xml_safe_chars($group) .'</a>.';
-
-            print FH '<a name="table_' . $table . '">'. xml_safe_chars($table) .'</a></h2>';
-            if ( defined( $structure{$group}{$table}{'DESCRIPTION'} ) ) {
-                print FH '<p>'.
-						 xml_safe_chars($structure{$group}{$table}{'DESCRIPTION'}).
-						 '</p>';
-            }
-            print FH '<table width="100%" cellspacing="0" cellpadding="3">
-                <caption>';
-            print FH xml_safe_chars($group . "." . $table) .' Structure</caption>
-                <tr>
-                <th>F-Key</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Description</th>
-                </tr>';
-            foreach my $column (
-                sort {
-                    $structure{$group}{$table}{'COLUMN'}{$a}
-                      {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                      {'ORDER'}
-                }
-                keys %{ $structure{$group}{$table}{'COLUMN'} }
-              )
-            {
-
-                print FH '<tr class="tr' . ( $tr++ % 2 ) . '">';
-
-                # Test for and resolv foreign keys
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}
-                    )
-                    && $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne ''
-                  )
-                {
-
-                    my $fk_group;
-                    foreach my $fk_search_group ( sort keys %structure ) {
-                        foreach my $fk_search_table (
-                            sort keys %{ $structure{$fk_search_group} } )
-                        {
-                            if ( $fk_search_table eq
-                                $structure{$group}{$table}{'COLUMN'}{$column}
-                                {'FK'} )
-                            {
-                                $fk_group = $fk_search_group;
-
-                                # Found our key, lets get out.
-                                goto FKFOUND;
-                            }
-                        }
-                    }
-                  FKFOUND:
-
-                    # Test for whether we found a good Foreign key reference or not.
-                    if ( !defined($fk_group) ) {
-                        print "BAD FOREIGN KEY FROM $table TO "
-                          . $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}
-                          . "\n";
-                        print "Errors will occur due to this.".
-							  " Please fix them and re-run $basename\n";
-                    }
-
-                    print FH '<td><a href="#table_'
-                      . $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}
-                      . '">';
-
-                    print FH $fk_group . ' -> ';
-
-                    print FH $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}
-                      . '</a>
-                  </td>';
-
-                }
-                else {
-                    print FH '<td></td>';
-                }
-
-                print FH '<td>' . $column . '</td>
-                  <td>'
-                  . xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'})
-                  . '</td><td>';
-
-                my $marker_wasdata = 0;
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'NULL'} ne
-                    '' )
-                {
-                    print FH '<i>'.
-                      xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}{'NULL'});
-                    $marker_wasdata = 1;
-                }
-
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'PRIMARY KEY'}
-                    )
-                    && $structure{$group}{$table}{'COLUMN'}{$column}
-                    {'PRIMARY KEY'} == 1
-                  )
-                {
-                    if ( $marker_wasdata == 1 ) {
-                        print FH ' PRIMARY KEY ';
-                    }
-                    else {
-                        print FH '<i>PRIMARY KEY ';
-                        $marker_wasdata = 1;
-                    }
-                }
-
-                if (
-                    exists(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'UNIQUE'}
-                    )
-                  )
-                {
-                    if ( $marker_wasdata == 1 ) {
-                        print FH ' UNIQUE ';
-                    }
-                    else {
-                        print FH '<i>UNIQUE ';
-                        $marker_wasdata = 1;
-                    }
-                }
-
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
-                    )
-                  )
-                {
-                    if ( $marker_wasdata == 1 ) {
-                        print FH ' default '
-                          . xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}
-                          {'DEFAULT'});
-                    }
-                    else {
-                        print FH '<i>default '
-                          . xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}
-                          {'DEFAULT'});
-                        $marker_wasdata = 1;
-                    }
-                }
-
-                if ( $marker_wasdata == 1 ) {
-                    print FH '</i>';
-                }
-
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'DESCRIPTION'}
-                    )
-                  )
-                {
-                    if ( $marker_wasdata == 1 ) {
-                        print FH '<br><br>';
-                    }
-                    print FH xml_safe_chars($structure{$group}{$table}{'COLUMN'}{$column}
-                      {'DESCRIPTION'});
-                }
-
-                print FH '</td></tr>';
-
-            }
-            print FH '</table>';
-
-            # Reset color counter
-            $tr = 0;
-
-            # Constraint List
-            my $constraint_marker = 0;
-            foreach my $constraint (
-                sort keys %{ $structure{$group}{$table}{'CONSTRAINT'} } )
-            {
-                if ( $constraint_marker == 0 ) {
-                    print FH
-						'<p>&nbsp;</p><table width="100%"'.
-						' cellspacing="0" cellpadding="3">
-                    <caption>';
-
-                    print FH xml_safe_chars($group . '.' . $table) .' Constraints</caption>
-                    <tr>
-                    <th>Name</th>
-                    <th>Constraint</th>
-                    </tr>';
-                    $constraint_marker = 1;
-                }
-                print FH '<tr class="tr'
-                  . ( $tr++ % 2 )
-                  . '"><td>'
-                  . xml_safe_chars($constraint) .'</td>
-                      <td>'
-                  . xml_safe_chars($structure{$group}{$table}{'CONSTRAINT'}{$constraint})
-                  . '</td></tr>';
-            }
-            if ( $constraint_marker == 1 ) {
-                print FH '</table>';
-            }
-
-            # Foreign Key Discovery
-            my $fk_marker = 0;
-            foreach my $fk_group ( sort keys %structure ) {
-                foreach my $fk_table ( sort keys %{ $structure{$fk_group} } ) {
-                    foreach my $fk_column (
-                        sort
-                        keys %{ $structure{$fk_group}{$fk_table}{'COLUMN'} } )
-                    {
-                        if (
-                            defined(
-                                $structure{$fk_group}{$fk_table}{'COLUMN'}
-                                  {$fk_column}{'FK'}
-                            )
-                            && $structure{$fk_group}{$fk_table}{'COLUMN'}
-                            {$fk_column}{'FK'} eq $table
-                          )
-                        {
-                            if ( $fk_marker == 0 ) {
-                                print FH
-								'<p>Tables referencing this one via'.
-								' Foreign Key Constraints:</p><ul>';
-                                $fk_marker = 1;
-                            }
-                            print FH '<li><a href="#table_' . $fk_table . '">';
-                            print FH xml_safe_chars($fk_group .'.'.
-                            		$fk_table) . '</a></li>';
-                        }
-                    }
-                }
-            }
-
-            if ( $fk_marker == 1 ) {
-                print FH '</ul>';
-            }
-
-            # Reset color counter
-            $tr = 0;
-
-            # List off permissions
-            my $perminserted = 0;
-            foreach
-              my $user ( sort keys %{ $structure{$group}{$table}{'ACL'} } )
-            {
-
-                # Lets not list the user unless they have atleast one permission
-                my $foundone = 0;
-                foreach my $perm (
-                    sort keys %{ $structure{$group}{$table}{'ACL'}{$user} } )
-                {
-                    if ( $structure{$group}{$table}{'ACL'}{$user}{$perm} == 1 )
-                    {
-                        $foundone = 1;
-                    }
-                }
-
-                if ( $foundone == 1 ) {
-
-                    # Have we started the section yet?
-                    if ( $perminserted == 0 ) {
-                        print FH
-'<p>&nbsp;</p><table width="100%"'.' cellspacing="0" cellpadding="3">';
-                        print FH '<caption>'
-                          . xml_safe_chars(
-                            'Permissions which apply to ' . $table )
-                          . '</caption>';
-                        print FH '<tr>';
-                        print FH '<th>' . xml_safe_chars('User') . '</th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Select')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Insert')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Update')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Delete')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Rule')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Reference')
-                          . '</center></th>';
-                        print FH '<th><center>'
-                          . xml_safe_chars('Trigger')
-                          . '</center></th>';
-                        print FH '</tr>';
-
-                        $perminserted = 1;
-                    }
-
-                    print FH '<tr class="tr' . ( $tr++ % 2 ) . '">';
-                    print FH '<td>' . xml_safe_chars($user) . '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'SELECT'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'SELECT'} ==
-                        1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'INSERT'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'INSERT'} ==
-                        1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'} ==
-                        1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'DELETE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'DELETE'} ==
-                        1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'RULE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'RULE'} == 1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}
-                              {'REFERENCES'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}
-                        {'REFERENCES'} == 1
-                      )
-                    {
-                        print FH '<center>&diams;</center>';
-                    }
-                    print FH '</td>';
-
-                    print FH '<td>';
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}
-                        {'TRIGGER'} == 1
-                      )
-                    {
-                        print FH '&diams;';
-                    }
-                    print FH '</td></tr>';
-                }
-            }
-            if ( $perminserted != 0 ) {
-                print FH '</table>';
-            }
-
-            print FH '<p><a href="#index">Index</a>';
-            print FH ' - <a href="#group_' . $group
-              . '">Schema '
-              . $group . '</a>';
-            print FH '</p>';
-        }
-
-        ###
-        ## We've gone through the table structure, now lets take
-        ## a look at user functions.
-        foreach my $function ( sort keys %{ $struct{'FUNCTION'}{$group} } ) {
-            my $comment = $struct{'FUNCTION'}{$group}{$function}{'COMMENT'};
-            $comment = 'NO COMMENT' if !defined($comment);
-
-            print FH '<hr><h2>Function: ';
-
-            print FH '<a href="#group_' . $group . '">' . $group . '</a>.';
-
-            print FH '<a name="function_'
-              . $function . '">'
-              . $function
-              . '</a></h2>';
-
-            print FH '<pre>' . xml_safe_chars($comment) . '</pre>';
-        }
-
-    }
-    print FH '<p class="w3ref">'.
-            '<a href="http://validator.w3.org/check/referer">'.
-			'W3C HTML 4.01 Strict</a></p>';
-    print FH '</body></html>';
-}
-
-#####################################
-## write_dot_file_ports()
-##
-sub write_dot_file_ports {
-
-    sysopen( FH, $dot_outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644 )
-      or die "Can't open $dot_outputfile: $!";
-
-    print FH 'digraph g {
-graph [
-rankdir = "LR",
-concentrate = true,
-ratio = 1.0
-];
-node [
-fontsize = "10",
-shape = record
-];
-edge [
-];
-';
-
-    my $colNum;
-    foreach my $group ( sort keys %structure ) {
-
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-            my @columns = sort {
-                $structure{$group}{$table}{'COLUMN'}{$a}
-                  {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                  {'ORDER'}
-            } keys %{ $structure{$group}{$table}{'COLUMN'} };
-            my @graphCols;
-            my $ref_table;
-            foreach my $column (@columns) {
-                my $type =
-                  $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'};
-                $type =~ tr/a-z/A-Z/;
-                $colNum =
-                  $structure{$group}{$table}{'COLUMN'}{$column}{'ORDER'};
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '' )
-                {
-                    $ref_table =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'FK'};
-                }
-                push ( @graphCols, qq /| <col$colNum> $column:  $type\\l/ );
-            }
-
-            print FH qq /$table [shape = record, label = "\\N /;
-            print FH join ( ' ', @graphCols );
-            print FH qq/" ];\n/;
-        }
-    }
-
-    foreach my $group ( sort keys %structure ) {
-
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-            my @columns = sort {
-                $structure{$group}{$table}{'COLUMN'}{$a}
-                  {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                  {'ORDER'}
-            } keys %{ $structure{$group}{$table}{'COLUMN'} };
-            foreach my $column (@columns) {
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '' )
-                {
-                    my $ref_table =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'FK'};
-                    my $ref_column =
-                      $structure{$group}{$table}{'COLUMN'}{$column}
-                      {'FK-COL NAME'};
-                    my $ref_group =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'FKGROUP'};
-                    my $ref_con =
-                      $structure{$ref_group}{$ref_table}{'COLUMN'}{$ref_column}
-                      {'ORDER'};
-                    my $key_con =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'ORDER'};
-                    print FH "$table:col$key_con -> $ref_table:col$ref_con;\n";
-                }
-            }
-        }
-    }
-    print FH "\n}\n";
-}
-
-#####################################
-## write_uml_structure
-##
-sub write_uml_structure {
-    sysopen( FH, $uml_outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644 )
-      or die "Can't open $uml_outputfile: $!";
-
-    print FH '<?xml version="1.0" encoding="UTF-8"?>
-<dia:diagram xmlns:dia="http://www.lysator.liu.se/~alla/dia/">
-  <dia:layer name="Background" visible="true">
-';
-
-    my $id;
-    my %tableids;
-
-    foreach my $group ( sort keys %structure ) {
-        my @keylist = keys %structure;
-
-        # Schema's aren't grouped unless there is more than one.
-        if ( $#keylist >= 1 ) {
-            print FH '
-      <dia:group>';
-        }
-
-        # Run through the list of tables in this schema.
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-
-            $tableids{$table} = $id++;
-
-            my $constraintlist = "";
-            foreach my $constraintname (
-                sort keys %{ $structure{$group}{$table}{'CONSTRAINT'} } )
-            {
-                my $constraint =
-                  $structure{$group}{$table}{'CONSTRAINT'}{$constraintname};
-
-                # Shrink constraints to something managable
-                $constraint =~ s/^(.{30}).{5,}(.{5})$/$1 ... $2/g;
-
-                $constraintlist .= '
-        <dia:composite type="umloperation">
-          <dia:attribute name="name">
-            <dia:string>##</dia:string>
-          </dia:attribute>
-          <dia:attribute name="visibility">
-            <dia:enum val="3"/>
-          </dia:attribute>
-          <dia:attribute name="abstract">
-            <dia:boolean val="false"/>
-          </dia:attribute>
-          <dia:attribute name="class_scope">
-            <dia:boolean val="false"/>
-          </dia:attribute>
-          <dia:attribute name="parameters">
-            <dia:composite type="umlparameter">
-              <dia:attribute name="name">
-                <dia:string>'
-                  . xml_safe_chars( '#' . $constraint . '#' )
-                  . '</dia:string>
-              </dia:attribute>
-              <dia:attribute name="value">
-                <dia:string/>
-              </dia:attribute>
-               <dia:attribute name="type">
-                 <dia:string>##</dia:string>
-               </dia:attribute>
-              <dia:attribute name="kind">
-                <dia:enum val="0"/>
-              </dia:attribute>
-            </dia:composite>
-          </dia:attribute>
-        </dia:composite>';
-            }
-
-            my $columnlist = "";
-            foreach my $column (
-                sort {
-                    $structure{$group}{$table}{'COLUMN'}{$a}
-                      {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                      {'ORDER'}
-                }
-                keys %{ $structure{$group}{$table}{'COLUMN'} }
-              )
-            {
-                my $currentcolumn;
-
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}
-                    {'PRIMARY KEY'} == 1 )
-                {
-                    $currentcolumn .= "PK ";
-                }
-                else {
-                    $currentcolumn .= "   ";
-                }
-
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} eq '' )
-                {
-                    $currentcolumn .= "   ";
-                }
-                else {
-                    $currentcolumn .= "FK ";
-                }
-
-                $currentcolumn .= "$column";
-
-                my $type =
-                  $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'};
-                $type =~ tr/a-z/A-Z/;
-
-                $columnlist .= '
-        <dia:composite type="umlattribute">
-          <dia:attribute name="name">
-            <dia:string>'
-                  . xml_safe_chars( '#' . $currentcolumn . '#' )
-                  . '</dia:string>
-          </dia:attribute>
-          <dia:attribute name="type">
-            <dia:string>' . xml_safe_chars( '#' . $type . '#' ) . '</dia:string>
-          </dia:attribute>';
-                if (
-                    !defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
-                    )
-                  )
-                {
-                    $columnlist .= '
-          <dia:attribute name="value">
-            <dia:string/>
-          </dia:attribute>';
-                }
-                else {
-
-                    # Shrink the default if necessary
-                    my $default =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'};
-                    $default =~ s/^(.{17}).{5,}(.{5})$/$1 ... $2/g;
-
-                    $columnlist .= '
-          <dia:attribute name="value">
-            <dia:string>'
-                      . xml_safe_chars( '#' . $default . '#' )
-                      . '</dia:string>
-          </dia:attribute>';
-                }
-
-                $columnlist .= '
-          <dia:attribute name="visibility">
-            <dia:enum val="3"/>
-          </dia:attribute>
-          <dia:attribute name="abstract">
-            <dia:boolean val="false"/>
-          </dia:attribute>
-          <dia:attribute name="class_scope">
-            <dia:boolean val="false"/>
-          </dia:attribute>
-        </dia:composite>';
-            }
-            print FH '
-    <dia:object type="UML - Class" version="0" id="O' . $tableids{$table} . '">
-      <dia:attribute name="name">
-        <dia:string>' . xml_safe_chars( '#' . $table . '#' ) . '</dia:string>
-      </dia:attribute>';
-            if ( $#keylist >= 1 ) {
-                print FH '
-      <dia:attribute name="stereotype">
-        <dia:string>';
-                print FH xml_safe_chars( '#' . $group . '#' );
-                print FH '</dia:string>
-      </dia:attribute>';
-            }
-            print FH '
-      <dia:attribute name="abstract">
-        <dia:boolean val="false"/>
-      </dia:attribute>
-      <dia:attribute name="suppress_attributes">
-        <dia:boolean val="false"/>
-      </dia:attribute>
-      <dia:attribute name="suppress_operations">
-        <dia:boolean val="false"/>
-      </dia:attribute>
-      <dia:attribute name="visible_attributes">
-        <dia:boolean val="true"/>
-      </dia:attribute>
-      <dia:attribute name="attributes">' . $columnlist . '</dia:attribute>';
-
-            if ( $constraintlist eq '' ) {
-                print FH '
-      <dia:attribute name="visible_operations">
-        <dia:boolean val="false"/>
-      </dia:attribute>
-      <dia:attribute name="operations"/>';
-            }
-            else {
-                print FH '
-      <dia:attribute name="visible_operations">
-        <dia:boolean val="true"/>
-      </dia:attribute>
-      <dia:attribute name="operations">' . $constraintlist . '
-      </dia:attribute>';
-            }
-
-            print FH '
-      <dia:attribute name="template">
-        <dia:boolean val="false"/>
-      </dia:attribute>
-      <dia:attribute name="templates"/>
-    </dia:object>';
-        }
-
-        # Schema's aren't grouped unless there is more than one.
-        if ( $#keylist >= 1 ) {
-            print FH '
-      </dia:group>';
-        }
-    }
-
-    # Link the various components together via the template.
-    foreach my $group ( sort keys %structure ) {
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-
-            foreach my $column (
-                sort {
-                    $structure{$group}{$table}{'COLUMN'}{$a}
-                      {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                      {'ORDER'}
-                }
-                keys %{ $structure{$group}{$table}{'COLUMN'} }
-              )
-            {
-
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '' )
-                {
-
-                    print FH '
-      <dia:object type="UML - Constraint" version="0" id="O' . $id++ . '">
-      <dia:attribute name="constraint">
-        <dia:string>' . xml_safe_chars( '#' . $column . '#' ) . '</dia:string>
-      </dia:attribute>
-      <dia:connections>';
-                    my $ref_table =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'FK'};
-                    my $ref_group =
-                      $structure{$group}{$table}{'COLUMN'}{$column}{'FKGROUP'};
-                    my $ref_column =
-                      $structure{$group}{$table}{'COLUMN'}{$column}
-                      {'FK-COL NAME'};
-                    my $ref_con =
-                      6 + ( $structure{$ref_group}{$ref_table}{'COLUMN'}
-                          {$ref_column}{'ORDER'} * 2 );
-                    my $key_con = 7 +
-                      ( $structure{$group}{$table}{'COLUMN'}{$column}{'ORDER'} *
-                          2 );
-                    print FH '
-        <dia:connection handle="0" to="O'
-                      . $tableids{$table}
-                      . '" connection="'
-                      . $key_con . '"/>
-        <dia:connection handle="1" to="O'
-                      . $tableids{$ref_table}
-                      . '" connection="'
-                      . $ref_con . '"/>
-      </dia:connections>
-    </dia:object>';
-                }
-            }
-        }
-    }
-
-    print FH '
-  </dia:layer>
-</dia:diagram>';
-
-}
-
-#####################################
-## write_docbook_structure()
-##
-sub write_docbook_structure {
-
-    sysopen( FH, $docbook_outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644 )
-      or die "Can't open $docbook_outputfile: $!";
-
-    print FH '<book id="database.'
-      . sgml_safe_id($database)
-      . '" xreflabel="'
-      . xml_safe_chars($database)
-      . ' database schema">';
-    print FH "\n<title>" . xml_safe_chars("$database Model") . "</title>\n";
-
-    # Output a DB comment.
-    if ( defined( $struct{'DATABASE'}{$database}{'COMMENT'} ) ) {
-        print FH xml_safe_chars( $struct{'DATABASE'}{$database}{'COMMENT'} );
-    }
-
-    ####
-    ## Group Creation
-    foreach my $group ( sort keys %structure ) {
-
-        ####
-        # Show the schema comment
-        print FH '<chapter id="'
-          . sgml_safe_id("$group")
-          . '.schema'
-          . '" xreflabel="'
-          . $group . '">';
-        print FH '<title>' . xml_safe_chars("Schema $group") . "</title>\n";
-
-        print FH '<para>'
-          . xml_safe_chars( $struct{'SCHEMA'}{$group}{'COMMENT'} )
-          . "</para>\n";
-
-        foreach my $table ( sort keys %{ $structure{$group} } ) {
-
-            # Table section identifier
-            print FH '<section id="'
-              . sgml_safe_id("$group.table.$table")
-              . '" xreflabel="'
-              . xml_safe_chars("$group.$table") . '">';
-
-            # Section Title
-            print FH '<title>' . xml_safe_chars($table) . "</title>\n";
-
-            # Relation Description
-            if ( defined( $structure{$group}{$table}{'DESCRIPTION'} ) ) {
-                print FH '<para>'
-                  . xml_safe_chars( $structure{$group}{$table}{'DESCRIPTION'} )
-                  . "</para>\n";
-            }
-
-            # Table structure
-            print FH '<para><variablelist><title>'
-              . xml_safe_chars("Structure of $table")
-              . '</title>';
-
-            foreach my $column (
-                sort {
-                    $structure{$group}{$table}{'COLUMN'}{$a}
-                      {'ORDER'} <=> $structure{$group}{$table}{'COLUMN'}{$b}
-                      {'ORDER'}
-                }
-                keys %{ $structure{$group}{$table}{'COLUMN'} }
-              )
-            {
-
-                print FH '<varlistentry><term>'
-                  . xml_safe_chars($column)
-                  . "</term><listitem><para>\n"
-                  . xml_safe_chars(
-                    $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} );
-
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'NULL'} ne
-                    '' )
-                {
-                    print FH ' <literal>'
-                      . xml_safe_chars("NOT NULL")
-                      . '</literal>';
-                }
-
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'PRIMARY KEY'}
-                    )
-                    && $structure{$group}{$table}{'COLUMN'}{$column}
-                    {'PRIMARY KEY'} == 1
-                  )
-                {
-
-                    print FH ' <literal>'
-                      . xml_safe_chars('PRIMARY KEY')
-                      . '</literal>';
-                }
-
-                if (
-                    exists(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'UNIQUE'}
-                    )
-                  )
-                {
-                    print FH ' <literal>',
-                      xml_safe_chars('UNIQUE') . '</literal>';
-                }
-
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
-                    )
-                    && $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
-                    ne ''
-                  )
-                {
-
-                    print FH ' <literal>'
-                      . xml_safe_chars('DEFAULT ')
-                      . $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
-                      . '</literal>';
-                }
-
-                if ( $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '' )
-                {
-                    print FH ' <literal>REFERENCES</literal> <xref linkend="'
-                      . sgml_safe_id(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'FKGROUP'} )
-                      . '.table.'
-                      . sgml_safe_id(
-                        $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} )
-                      . '">';
-                }
-
-                print FH '</para>';
-
-                # Lets toss in the column description.
-                if (
-                    defined(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'DESCRIPTION'}
-                    )
-                  )
-                {
-                    print FH '<para>'
-                      . xml_safe_chars(
-                        $structure{$group}{$table}{'COLUMN'}{$column}
-                          {'DESCRIPTION'} )
-                      . "</para>\n";
-                }
-
-                print FH '</listitem></varlistentry>';
-            }
-            print FH '</variablelist>';
-
-            # Constraint List
-            my $constraints = 0;
-            foreach my $constraint (
-                sort keys %{ $structure{$group}{$table}{'CONSTRAINT'} } )
-            {
-                if ( $constraints == 0 ) {
-                    print FH '<variablelist><title>'
-                      . xml_safe_chars("Constraints on $table")
-                      . "</title>\n";
-
-                    $constraints++;
-                }
-                print FH '<varlistentry><term>'
-                  . xml_safe_chars($constraint)
-                  . "</term>\n<listitem><para>"
-                  . xml_safe_chars(
-                    $structure{$group}{$table}{'CONSTRAINT'}{$constraint} )
-                  . '</para></listitem></varlistentry>';
-            }
-            if ( $constraints > 0 ) {
-                print FH "</variablelist>\n";
-            }
-
-            # Foreign Key Discovery
-            my $fkinserted = 0;
-            foreach my $fk_group ( sort keys %structure ) {
-                foreach my $fk_table ( sort keys %{ $structure{$fk_group} } ) {
-                    foreach my $fk_column (
-                        sort
-                        keys %{ $structure{$fk_group}{$fk_table}{'COLUMN'} } )
-                    {
-                        if (
-                            defined(
-                                $structure{$fk_group}{$fk_table}{'COLUMN'}
-                                  {$fk_column}{'FK'}
-                            )
-                            && $structure{$fk_group}{$fk_table}{'COLUMN'}
-                            {$fk_column}{'FK'} eq $table
-                          )
-                        {
-                            if ( $fkinserted == 0 ) {
-                                print FH '<itemizedlist>';
-                                print FH '<title>'
-                                  . xml_safe_chars(
-                                    'Tables referencing ' . $table
-                                      . ' via Foreign Key Constraints' )
-                                  . "</title>\n";
-
-                                $fkinserted = 1;
-                            }
-
-                            print FH '<listitem><para><xref linkend="'
-                              . sgml_safe_id("$fk_group")
-                              . '.table.'
-                              . sgml_safe_id($fk_table) . '">'
-                              . "</para>\n</listitem>";
-                        }
-                    }
-                }
-            }
-            if ( $fkinserted != 0 ) {
-                print FH "</itemizedlist>\n";
-            }
-
-            # List off permissions
-            my $perminserted = 0;
-            foreach
-              my $user ( sort keys %{ $structure{$group}{$table}{'ACL'} } )
-            {
-
-                # Lets not list the user unless they have atleast one permission
-                my $foundone = 0;
-                foreach my $perm (
-                    sort keys %{ $structure{$group}{$table}{'ACL'}{$user} } )
-                {
-                    if ( $structure{$group}{$table}{'ACL'}{$user}{$perm} == 1 )
-                    {
-                        $foundone = 1;
-                    }
-                }
-
-                if ( $foundone == 1 ) {
-
-                    # Have we started the section yet?
-                    if ( $perminserted == 0 ) {
-
-                        print FH '<variablelist><title>'
-                          . xml_safe_chars("Permissions on $table")
-                          . "</title>\n";
-
-                        $perminserted = 1;
-                    }
-
-                    print FH '<varlistentry><term>'
-                      . xml_safe_chars($user)
-                      . "</term>\n<listitem><para>"
-                      . '<simplelist type="inline">';
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'SELECT'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'SELECT'} ==
-                        1
-                      )
-                    {
-                        print FH "<member>Select</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'INSERT'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'INSERT'} ==
-                        1
-                      )
-                    {
-                        print FH "<member>Insert</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'} ==
-                        1
-                      )
-                    {
-                        print FH "<member>Update</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'DELETE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'DELETE'} ==
-                        1
-                      )
-                    {
-                        print FH "<member>Delete</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'RULE'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}{'RULE'} == 1
-                      )
-                    {
-                        print FH "<member>Rule</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}
-                              {'REFERENCES'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}
-                        {'REFERENCES'} == 1
-                      )
-                    {
-                        print FH "<member>References</member>\n";
-                    }
-
-                    if (
-                        defined(
-                            $structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'}
-                        )
-                        && $structure{$group}{$table}{'ACL'}{$user}
-                        {'TRIGGER'} == 1
-                      )
-                    {
-                        print FH "<member>Trigger</member>\n";
-                    }
-                    print FH "</simplelist></para></listitem></varlistentry>\n";
-                }
-            }
-            if ( $perminserted != 0 ) {
-                print FH "</variablelist>\n";
-            }
-            print FH "</para></section>\n";
-        }
-
-        ###
-        # Function listing in the section
-        foreach my $function ( sort keys %{ $struct{'FUNCTION'}{$group} } ) {
-            print FH '<section id="'
-              . sgml_safe_id("$group")
-              . '.function.'
-              . sgml_safe_id($function)
-              . '" xreflabel="'
-              . xml_safe_chars("$group.$function") . '">';
-            print FH '<title>' . xml_safe_chars("$function") . '</title>';
-            print FH '<para>'
-              . xml_safe_chars(
-                $struct{'FUNCTION'}{$group}{$function}{'COMMENT'} )
-              . '</para>';
-            print FH "</section>\n";
-        }
-        print FH '</chapter>';
-    }
-    print FH '</book>';
-
-}
 
 #####
-# xml_safe_chars
-#   Convert various characters to their 'XML Safe' version
-sub xml_safe_chars {
-    my $string = shift;
+# write_using_templates
+#	Generate structure that HTML::Template requires out of the
+#	$structure for table related information, and $struct for
+#	the schema and function information
+#
+#	TODO: Finish conversion of $structure format into $struct
+sub write_using_templates
+{
+	my @schemas;
+	# Start at 0, increment to 1 prior to use.
+	my $object_id = 0;
+	my %tableids;
+	foreach my $schema ( sort keys %structure ) {
+		my @tables;
+		foreach my $table ( sort keys %{ $structure{$schema} } ) {
+			# Column List
+			my @columns;
+			foreach my $column (
+				sort {
+					$structure{$schema}{$table}{'COLUMN'}{$a}{'ORDER'} <=>
+					$structure{$schema}{$table}{'COLUMN'}{$b}{'ORDER'}
+				} keys %{ $structure{$schema}{$table}{'COLUMN'} }
+			  )
+			{
+				# Have a shorter default for places that require it
+				my $shortdefault = $structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'};
+				$shortdefault =~ s/^(.{17}).{5,}(.{5})$/$1 ... $2/g;
 
-    if ( defined($string) ) {
-        if ( $string =~ /^\@DOCBOOK/ ) {
-            $string =~ s/^\@DOCBOOK//;
-        }
-        else {
-            $string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
-            $string =~ s/</&lt;/g;
-            $string =~ s/>/&gt;/g;
-            $string =~ s/'/&apos;/g;
-            $string =~ s/"/&quot;/g;
-        }
-    }
-    else {
-        return ('');
-    }
+				# Deal with column constraints
+				my @colconstraints;
+				foreach my $con
+					( sort keys %{ $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'} })
+				{
+					if ($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} eq 'UNIQUE') {
+						my $unq = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'};
+						my $unqcol = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'COLNUM'};
+						my $unqgroup = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'};
 
-    return ($string);
+						push @colconstraints, {
+							column_unique => $unq,
+							column_unique_colnum => $unqcol,
+							column_unique_keygroup => $unqgroup,
+							column_unique_dbk => docbook($unq),
+							column_unique_colnum_dbk => docbook($unqcol),
+							column_unique_keygroup_dbk => docbook($unqgroup),
+						};
+					} elsif ($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} eq 'PRIMARY KEY') {
+						push @colconstraints, {
+							column_primary_key => 1,
+							column_null => $structure{$schema}{$table}{'COLUMN'}{$column}{'NULL'},
+						};
+					} elsif ($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'} eq 'FOREIGN KEY') {
+						my $fksgmlid = sgml_safe_id(
+							join('.'
+								, $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKSCHEMA'}
+								, $structure{$schema}{$table}{'TYPE'} 
+							   	, $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKTABLE'}));
+
+						my $fkgroup = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'};
+						my $fktable = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKTABLE'};
+						my $fkcolumn = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FK-COL NAME'};
+						my $fkschema = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKSCHEMA'};
+
+						push @colconstraints, {
+							column_fk => $fkcolumn,
+							column_fk_dbk => docbook($fkcolumn),
+							column_fk_keygroup => $fkgroup,
+							column_fk_keygroup_dbk => docbook($fkgroup),
+							column_fk_sgmlid => $fksgmlid,
+							column_fk_schema => $fkschema,
+							column_fk_schema_dbk => docbook($fkschema),
+							column_fk_table => $fktable,
+							column_fk_table_dbk => docbook($fktable),
+						};
+
+						# only have the count if there is more than 1 schema
+						if (scalar(keys %structure) > 1) {
+							$colconstraints[-1]{"number_of_schemas"} = scalar(keys %structure);
+						}
+					}
+				}
+
+
+				# Generate the Column array
+				push @columns, {
+					column => $column,
+					column_dbk => docbook($column),
+					column_default => $structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'},
+					column_default_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'}),
+					column_default_short => $shortdefault,
+					column_default_short_dbk => docbook($shortdefault),
+
+					column_description => $structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'},
+					column_description_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'DESCRIPTION'}),
+
+					column_null => $structure{$schema}{$table}{'COLUMN'}{$column}{'NULL'},
+					column_number => $structure{$schema}{$table}{'COLUMN'}{$column}{'ORDER'},
+					column_number_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'ORDER'}),
+
+					column_type => $structure{$schema}{$table}{'COLUMN'}{$column}{'TYPE'},
+					column_type_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'TYPE'}),
+
+					column_constraints => \@colconstraints,
+				};
+			}
+
+			# Constraint List
+			my @constraints;
+			foreach my $constraint ( sort keys %{ $structure{$schema}{$table}{'CONSTRAINT'} } ) {
+				my $shortcon = $structure{$schema}{$table}{'CONSTRAINT'}{$constraint};
+				$shortcon =~ s/^(.{30}).{5,}(.{5})$/$1 ... $2/g;
+				push @constraints, {
+					constraint => $structure{$schema}{$table}{'CONSTRAINT'}{$constraint},
+					constraint_dbk => docbook($structure{$schema}{$table}{'CONSTRAINT'}{$constraint}),
+					constraint_name => $constraint,
+					constraint_name_dbk => docbook($constraint),
+					constraint_short => $shortcon,
+					constraint_short_dbk => docbook($shortcon),
+					table => $table,
+					table_dbk => docbook($table),
+				};
+			}
+
+			# Foreign Key Discovery
+			#
+			# $lastmatch is used to ensure that we only supply a result a single time and not once
+			# for each link found.  Since the loops are sorted, we only need to track the last
+			# element, and not all supplied elements.
+			my @fk_schemas;
+			my $lastmatch = '';
+			foreach my $fk_schema ( sort keys %structure ) {
+				foreach my $fk_table ( sort keys %{ $structure{$fk_schema} } ) {
+					foreach my $fk_column (
+						sort keys %{ $structure{$fk_schema}{$fk_table}{'COLUMN'} } )
+					{
+						foreach my $con (
+							sort keys %{$structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}}
+						) {
+							if (
+								$structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}{$con}{'TYPE'} eq 'FOREIGN KEY'
+								&& $structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'CON'}{$con}{'FKTABLE'} eq $table
+								&& $lastmatch ne "$fk_schema$fk_table"
+								)
+							{
+								my $fksgmlid = sgml_safe_id(
+													join('.',$fk_schema
+															, $structure{$fk_schema}{$fk_table}{'TYPE'}
+															, $fk_table));
+								push @fk_schemas, {
+									fk_column_number => $structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'ORDER'},
+									fk_column_number_dbk => docbook($structure{$fk_schema}{$fk_table}{'COLUMN'}{$fk_column}{'ORDER'}),
+									fk_sgmlid => $fksgmlid,
+									fk_schema => $fk_schema,
+									fk_schema_dbk => docbook($fk_schema),
+									fk_table => $fk_table,
+									fk_table_dbk => docbook($fk_table),
+								};
+
+								# only have the count if there is more than 1 schema
+								if (scalar(keys %structure) > 1) {
+									$fk_schemas[-1]{"number_of_schemas"} = scalar(keys %structure);
+								}
+
+								$lastmatch = "$fk_schema$fk_table";
+							}
+						}
+					}
+				}
+			}
+
+			# List off permissions
+			my @permissions;
+			foreach my $user ( sort keys %{ $structure{$schema}{$table}{'ACL'} } ) {
+				push @permissions, {
+					schema => $schema,
+					schema_dbk => docbook($schema),
+					table => $table,
+					table_dbk => docbook($table),
+					user => $user,
+					user_dbk => docbook($user),
+				};
+
+				# only have the count if there is more than 1 schema
+				if (scalar(keys %structure) > 1) {
+					$permissions[-1]{"number_of_schemas"} = scalar(keys %structure);
+				}
+
+				foreach my $perm ( keys %{ $structure{$schema}{$table}{'ACL'}{$user} } ) {
+					if ( $structure{$schema}{$table}{'ACL'}{$user}{$perm} == 1 ) {
+						$permissions[-1]{lower($perm)} = 1; 
+					}
+				}
+
+			}
+
+			# Increment and record the object ID
+			$tableids{$table} = ++$object_id;
+			my $viewdef = sql_prettyprint($structure{$schema}{$table}{'VIEW_DEF'});
+
+			push @tables, {
+				object_id => $object_id,
+				object_id_dbk => docbook($object_id),
+				schema => $schema,
+				schema_dbk => docbook($schema),
+			  	table => $table,
+			  	table_dbk => docbook($table),
+				table_sgmlid => sgml_safe_id(join('.', $schema, $structure{$schema}{$table}{'TYPE'}, $table)),
+				table_description => $structure{$schema}{$table}{'DESCRIPTION'},
+				table_description_dbk => docbook($structure{$schema}{$table}{'DESCRIPTION'}),
+				type => $structure{$schema}{$table}{'TYPE'},
+				type_dbk => docbook($structure{$schema}{$table}{'TYPE'}),
+				view_definition => $viewdef,
+				view_definition_dbk => docbook($viewdef),
+				columns => \@columns,
+				constraints => \@constraints,
+				fk_schemas => \@fk_schemas,
+				permissions => \@permissions,
+			};
+
+			# only have the count if there is more than 1 schema
+			if (scalar(keys %structure) > 1) {
+				$tables[-1]{"number_of_schemas"} = scalar(keys %structure);
+			}
+		}
+
+		# Dump out list of functions
+		my @functions;
+		foreach my $function ( sort keys %{ $struct{'FUNCTION'}{$schema} } ) {
+			push @functions, {
+				function => $function,
+				function_dbk => docbook($function),
+				function_id => sgml_safe_id(join('.', $schema, 'function', $function)),
+				function_comment => $struct{'FUNCTION'}{$schema}{$function}{'COMMENT'},
+				function_comment_dbk => docbook($struct{'FUNCTION'}{$schema}{$function}{'COMMENT'}),
+			};
+		}
+
+		push @schemas, {
+			schema => $schema,
+			schema_dbk => docbook($schema),
+			schema_sgmlid => sgml_safe_id($schema.".schema"),
+			functions => \@functions,
+			tables => \@tables,
+		};
+
+		# Build the array of schemas
+		if (scalar(keys %structure) > 1) {
+			$schemas[-1]{"number_of_schemas"} = scalar(keys %structure);
+		}
+	}
+
+	# Link the various components together via the template.
+	my @fk_links;
+	my @fkeys;
+	foreach my $schema ( sort keys %structure ) {
+		foreach my $table ( sort keys %{ $structure{$schema} } ) {
+			foreach my $column (
+				sort {
+					$structure{$schema}{$table}{'COLUMN'}{$a}{'ORDER'} <=>
+					$structure{$schema}{$table}{'COLUMN'}{$b}{'ORDER'}
+				}
+				keys %{ $structure{$schema}{$table}{'COLUMN'} }
+			) {
+				foreach my $con (
+					sort keys %{$structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}}
+				) {
+					# To prevent a multi-column foreign key from appearing several times, we've opted
+					# to simply display the first column of any given key.  Since column numbering
+					# always starts at 1 for foreign keys.
+					if ( $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'TYPE'}
+							eq 'FOREIGN KEY' 
+						&& $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'COLNUM'}
+							== 1 )
+					{
+						# Pull out some of the longer keys
+						my $ref_table = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKTABLE'};
+						my $ref_schema = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FKSCHEMA'};
+						my $ref_column = $structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'FK-COL NAME'};
+
+						# Default values cause these elements to attach to the bottom in Dia
+						#
+						# If a KEYGROUP is not defined, it's a single column.  Modify the ref_con
+						# and key_con variables to attach the to the columns connection point
+						# directly.
+						my $ref_con = 0;
+						my $key_con = 0;
+						my $keycon_offset = 0;
+						if (!defined($structure{$schema}{$table}{'COLUMN'}{$column}{'CON'}{$con}{'KEYGROUP'})) {
+							$ref_con = $structure{$ref_schema}{$ref_table}{'COLUMN'}{$ref_column}{'ORDER'};
+							$key_con = $structure{$schema}{$table}{'COLUMN'}{$column}{'ORDER'};
+							$keycon_offset = 1;
+						}
+					
+						# Bump object_id
+						$object_id++;
+
+						push @fk_links, {
+							fk_link_name => $con,
+							fk_link_name_dbk => docbook($con),
+							fk_link_name_dot => graphviz($con),
+							handle0_connection => $key_con,
+							handle0_connection_dbk => docbook($key_con),
+							handle0_connection_dia => 6 + ($key_con * 2),
+							handle0_name => $table,
+							handle0_name_dbk => docbook($table),
+							handle0_to => $tableids{$table},
+							handle0_to_dbk => docbook($tableids{$table}),
+							handle1_connection => $ref_con,
+							handle1_connection_dbk => docbook($ref_con),
+							handle1_connection_dia => 6 + ($ref_con * 2) + $keycon_offset,
+							handle1_name => $ref_table,
+							handle1_name_dbk => docbook($ref_table),
+							handle1_to => $tableids{$ref_table},
+							handle1_to_dbk => docbook($tableids{$ref_table}),
+							object_id => $object_id,
+							object_id_dbk => docbook($object_id),
+						};
+					}
+				}
+			}
+		}
+	}
+
+### FOR DEBUGGING ###
+# print Data::Dumper->Dump(\@schemas);
+
+	# Make database level comment information
+	my @timestamp = localtime();
+	my $dumped_on = sprintf( "%04d-%02d-%02d", $timestamp[5]+1900, $timestamp[4]+1, $timestamp[3] );
+	my $database_comment = $struct{'DATABASE'}{$database}{'COMMENT'};
+
+	# Loop through each template found in the supplied path. Output the results of the template
+	# as <filename>.<extension> into the current working directory.
+	my @template_files = glob($template_path .'/*.tmpl');
+	foreach my $template_file (@template_files) {
+		(my $file_extension = $template_file) =~ s/^(?:.*\/|)([^\/]+)\.tmpl$/$1/;
+		my $output_filename = "$output_filename_base.$file_extension";
+		print "Producing $output_filename from $template_file\n";
+
+		my $template = HTML::Template->new(
+			filename => $template_file,
+			die_on_bad_params => 0,
+			global_vars => 0,
+			strict => 1,
+			loop_context_vars => 1
+		);
+
+		$template->param(
+			database => $database,
+			database_dbk => docbook($database),
+			database_sgmlid => sgml_safe_id($database),
+			database_comment => $database_comment,
+			database_comment_dbk => docbook($database_comment),
+			dumped_on => $dumped_on,
+			dumped_on_dbk => docbook($dumped_on),
+			fk_links => \@fk_links,
+			schemas => \@schemas,
+		);
+
+		sysopen( FH, $output_filename, O_WRONLY | O_TRUNC | O_CREAT, 0644 )
+		  or die "Can't open $output_filename: $!";
+		print FH $template->output();
+	}
 }
+
 
 ######
 # sgml_safe_id
 #   Safe SGML ID Character replacement
 sub sgml_safe_id {
-    my $string = shift;
+	my $string = shift;
 
-    # Lets use the keyword array to prevent duplicating a non-array equivelent
-    $string =~ s/\[\]/ARRAY-/g;
+	# Lets use the keyword ARRAY in place of the square brackets
+	# to prevent duplicating a non-array equivelent
+	$string =~ s/\[\]/ARRAY-/g;
 
-    # Brackets, spaces, commads, underscores are not valid 'id' characters
-    # replace with as few -'s as possible.
-    $string =~ s/[ "',)(_-]+/-/g;
+	# Brackets, spaces, commads, underscores are not valid 'id' characters
+	# replace with as few -'s as possible.
+	$string =~ s/[ "',)(_-]+/-/g;
 
-    # Don't want a - at the end either.  It looks silly.
-    $string =~ s/-$//g;
+	# Don't want a - at the end either.  It looks silly.
+	$string =~ s/-$//g;
 
-    return ($string);
+	return ($string);
+}
+
+#####
+# lower
+#	LowerCase the string
+sub lower($) {
+	my $string = shift;
+
+	$string =~ tr/A-Z/a-z/;
+
+	return ($string);
+}
+
+#####
+# docbook
+#	Docbook output is special in that we may or may not want to escape
+#	the characters inside the string depending on a string prefix.
+sub docbook {
+	my $string = shift;
+
+	if ( defined($string) ) {
+		if ( $string =~ /^\@DOCBOOK/ ) {
+			$string =~ s/^\@DOCBOOK//;
+		}
+		else {
+			$string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
+			$string =~ s/</&lt;/g;
+			$string =~ s/>/&gt;/g;
+			$string =~ s/'/&apos;/g;
+			$string =~ s/"/&quot;/g;
+		}
+	}
+	else {
+		# Return an empty string when all else fails
+		$string = '';
+	}
+
+	return ($string);
+}
+
+#####
+# graphviz
+#	GraphViz output requires that special characters (like " and whitespace) must be preceeded
+#	by a \ when a part of a lable.
+sub graphviz {
+	my $string = shift;
+
+	if ( defined($string) ) {
+		$string =~ s/([\s"'])/\\$1/g;
+	}
+	else {
+		# Return an empty string when all else fails
+		$string = '';
+	}
+
+	return ($string);
+}
+
+
+#####
+# sql_prettyprint
+#	Clean up SQL into something presentable
+sub sql_prettyprint
+{
+	my $string = shift;
+
+	# If nothing has been sent in, return an empty string
+	if (!defined($string))
+	{
+		return '';
+	}
+
+	# Initialize Result string
+	my $result = '';
+
+	# List of tokens to split on 
+	my $tok = "SELECT|FROM|WHERE|HAVING|GROUP BY|ORDER BY|OR|AND|LEFT JOIN|RIGHT JOIN".
+				"|LEFT OUTER JOIN|LEFT INNER JOIN|INNER JOIN|RIGHT OUTER JOIN|RIGHT INNER JOIN".
+				"|JOIN|UNION ALL|UNION|EXCEPT|USING|ON|CAST|[\(\),]";
+
+	my $key = 0;
+	my $bracket = 0;
+	my $depth = 0;
+	my $indent = 6;
+
+	# XXX: Split is wrong -- match would do
+	foreach my $elem (split(/(\"[^\"]*\"|'[^']*'|$tok)/, $string))
+	{
+		my $format;
+
+		# Skip junk tokens
+		if ($elem =~ /^[\s]?$/)
+		{
+			next;
+		}
+
+		# NOTE: Should we drop leading spaces?
+		#	$elem =~ s/^\s//;
+
+		# Close brackets are special
+		# Bring depth in a level
+		if ($elem =~ /\)/)
+		{
+			$depth = $depth - $indent;
+			if ($key == 1 or $bracket == 1)
+			{
+				$format = "%s%s";
+			} else
+			{
+				$format = "%s\n%". $depth ."s";
+			}
+
+			$key = 0;
+			$bracket = 0;
+		}
+		# Open brackets are special
+		# Bump depth out a level
+		elsif ($elem =~ /\(/)
+		{
+			if ($key == 1)
+			{
+				$format = "%s %s";
+			} else
+			{
+				$format = "%s\n%". $depth ."s";
+			}
+			$depth = $depth + $indent;
+			$bracket = 1;
+			$key = 0;
+		}
+		# Key element
+		# Token from our list -- format on left hand side of the equation
+		# when appropriate.
+		elsif ($elem =~ /$tok/)
+		{
+			if ($key == 1)
+			{
+				$format = "%s%s";
+			} else
+			{
+				$format = "%s\n%". $depth ."s";
+			}
+
+			$key = 1;
+			$bracket = 0;
+		}
+		# Value
+		# Format for right hand side of the equation
+		else {
+			$format = "%s%s";		
+
+			$key = 0;
+		}
+
+		# Add the new format string to the result
+		$result = sprintf($format, $result, $elem);
+	}
+
+	return $result;
 }
 
 #####
 # usage
 #   Usage
 sub usage {
-    print <<USAGE
+	print <<USAGE
 Usage:
   $basename [options] [dbname [username]]
 
 Options:
-  -d <dbname>     Specify database name to connect to (default: $database)
-  -f <file>       Specify UML (dia) output file (default: $uml_outputfile)
-  -F <file>       Specify index (HTML) output file (default: $index_outputfile)
-  -h <host>       Specify database server host (default: localhost)
-  -p <port>       Specify database server port (default: 5432)
+  -d <dbname>	 Specify database name to connect to (default: $database)
+  -f <file>	   Specify output file prefix (default: $database)
+  -h <host>	   Specify database server host (default: localhost)
+  -p <port>	   Specify database server port (default: 5432)
   -u <username>   Specify database username (default: $dbuser)
   --password=<pw> Specify database password (default: blank)
 
-  --no-index      Do NOT generate HTML index
-  --no-uml        Do NOT generate XML dia file
-  --no-docbook    Do NOT generate DocBook SGML file(s)
-  --no-dot        Do NOT generate directed graphs in the dot language (GraphViz)
+  -s <schema>	 Specify a specific schema to match. Technically this is a regular expression
+				  but anything other than a specific name may have unusual results.
 
 USAGE
-      ;
-    exit 0;
+	;
+	exit 0;
 }
