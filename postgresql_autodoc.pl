@@ -77,8 +77,13 @@ use Fcntl;
 # to seperate tables again.
 
 my %StereoType;
-# $StereoType{'Feature'} = '^(feature|rateplan)';
-
+$StereoType{'User'} = '^(user|account)';
+$StereoType{'Service'} = '^service[_]?(?!order)';
+$StereoType{'Triggers'} = '^(proc|trg)_';
+$StereoType{'Log'} = '^log_';
+$StereoType{'Contact'} = '^contact';
+$StereoType{'Service Order'} = '^service_order';
+$StereoType{'Dedicated'} = '^dedicated_';
 
 #
 # Just Code down here -- Nothing to see
@@ -176,7 +181,8 @@ my $sql_Tables = qq{
        , pg_class.oid
        , description as table_description
     FROM pg_class
-  LEFT OUTER JOIN pg_description on (pg_class.oid = pg_description.objoid)
+  LEFT OUTER JOIN pg_description on (   pg_class.oid = pg_description.objoid
+                                    AND pg_description.objsubid = 0)
    WHERE (  relkind = 'r'::"char"
          OR relkind = 's'::"char"
          )
@@ -239,8 +245,10 @@ my $sql_Columns = qq{
        , CASE
          WHEN attlen = -1 THEN
             CASE 
-            WHEN typname = 'varchar' OR typname = 'char' THEN
+            WHEN typname = 'varchar' THEN
                  typname || '(' || atttypmod - 4 || ')'
+            WHEN typname = 'bpchar' THEN
+                 'char' || '(' || atttypmod - 4 || ')'
             WHEN typname = 'numeric' THEN
                  format_type(atttypid, atttypmod)
             WHEN typname = 'text' THEN
@@ -334,7 +342,6 @@ while (my $tables = $sth_Tables->fetchrow_hashref) {
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DESCRIPTION'} = $cols->{'column_description'};
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'} = $cols->{'column_default'};
 
-
     # Convert sequences to SERIAL type.
     if (  $showserials
        && $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} eq 'int4'
@@ -354,7 +361,8 @@ while (my $tables = $sth_Tables->fetchrow_hashref) {
       $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'DEFAULT'} = '';
     }
 
-#    print "        $column_name\n";
+#    print "        $table_name -> $column_name\n";
+#    print $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} ."\n\n";
   }
 
   $sth_Primary_Keys->execute($table_oid);
@@ -476,7 +484,7 @@ sub write_index_structure($structure) {
       if ($group ne $default_group) {
         print FH $group .' - ';
       }
-      print FH $table .' Structure</caption>
+      print FH '"'. $table .'" Structure</caption>
                 <tr bgcolor="#E0E0EE">
                 <th>F-Key</th>
                 <th>Name</th>
@@ -494,7 +502,7 @@ sub write_index_structure($structure) {
             foreach my $fk_search_table (sort keys %{$structure{$fk_search_group}}) {
               if ($fk_search_table eq $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) {
                 $fk_group = $fk_search_group;
-                
+
                 # NOTE:  How do we get out of 2 loops quickly?
               }
             }
@@ -577,7 +585,7 @@ sub write_index_structure($structure) {
           if ($group ne $default_group) {
             print FH $group .' - ';
           }
-          print FH $table .' Constraints</caption>
+          print FH '"'. $table .'" Constraints</caption>
                     <tr bgcolor="#E0E0EE">
                     <th>Name</th>
                     <th>Constraint</th>
@@ -728,7 +736,7 @@ sub write_uml_structure($structure) {
           <dia:attribute name="parameters">
             <dia:composite type="umlparameter">
               <dia:attribute name="name">
-                <dia:string><![CDATA[#'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'#]]></dia:string>
+                <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'#') .'</dia:string>
               </dia:attribute>
               <dia:attribute name="type">
                 <dia:string>##</dia:string>
@@ -772,10 +780,10 @@ sub write_uml_structure($structure) {
         $columnlist .= '
         <dia:composite type="umlattribute">
           <dia:attribute name="name">
-            <dia:string>#'. $currentcolumn .'#</dia:string>
+            <dia:string>'. xml_safe_chars('#'. $currentcolumn .'#') .'</dia:string>
           </dia:attribute>
           <dia:attribute name="type">
-            <dia:string><![CDATA[#'. $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} .'#]]></dia:string>
+            <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} .'#') .'</dia:string>
           </dia:attribute>';
         if ($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} eq '') {
           $columnlist .= '
@@ -785,7 +793,7 @@ sub write_uml_structure($structure) {
         } else {
           $columnlist .= '
           <dia:attribute name="value">
-            <dia:string><![CDATA[#'. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} .'#]]></dia:string>
+            <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} .'#') .'</dia:string>
           </dia:attribute>';
         }
 
@@ -819,13 +827,13 @@ sub write_uml_structure($structure) {
         <dia:real val="3.2"/>
       </dia:attribute>
       <dia:attribute name="name">
-        <dia:string>#'. $table .'#</dia:string>
+        <dia:string>'. xml_safe_chars('#'. $table .'#'). '</dia:string>
       </dia:attribute>
       <dia:attribute name="stereotype">
         <dia:string>';
-        
+
           if ($group ne $default_group) {
-            print FH '#&#171;'. $group .'&#187;#';
+            print FH xml_safe_chars('#'. $group .'#');
           }
 
           print FH '</dia:string>
@@ -909,13 +917,13 @@ sub write_uml_structure($structure) {
         <dia:enum val="1"/>
       </dia:attribute>
       <dia:attribute name="name">
-        <dia:string>#'. $column .'#</dia:string>
+        <dia:string>'. xml_safe_chars('#'. $column .'#') .'</dia:string>
       </dia:attribute>
       <dia:attribute name="stereotype">
         <dia:string>';
 
           if ($group ne $default_group) {
-            print FH '#&#171;'. $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} .'&#187;#';
+            print FH xml_safe_chars('#'. $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} .'#');
           }
 
           print FH '</dia:string>
@@ -937,6 +945,18 @@ sub write_uml_structure($structure) {
 }
 
 
+sub xml_safe_chars {
+
+  my $string = shift;
+
+  $string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
+  $string =~ s/</&lt;/g;
+  $string =~ s/>/&gt;/g;
+  $string =~ s/'/&apos;/g;
+  $string =~ s/"/&quot;/g;
+
+  return ($string);
+}
 
 
 sub usage {
@@ -955,7 +975,6 @@ Options:
 
   --no-index      Do NOT generate HTML index
   --no-uml        Do NOT generate XML dia file
-
 
   -s              Converts columns of int4 type with a sequence by default to SERIAL type
   -S              Ignores SERIAL type entirely.  (No conversions).
