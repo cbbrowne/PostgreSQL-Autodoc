@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
-# $Id: postgresql_autodoc.pl,v 1.21 2002/02/05 20:53:08 rbt Exp $
+# $Id: postgresql_autodoc.pl,v 1.22 2002/02/08 17:09:48 rbt Exp $
 
-# Postgres Auto-Doc Version 0.40
+# Postgres Auto-Doc Version 0.50
 
 # Installation Steps
 # ------------------
@@ -81,23 +81,10 @@ my %StereoType;
 # Stereo Type Example.  Groups all tables beginning with user or account into StereoType 'User'
 #     $StereoType{'User'} = '^(user|account)';
 
-$StereoType{'User'} = '^user';
-$StereoType{'Account Contact'} = '^contact';
-$StereoType{'Account'} = '^account';
-$StereoType{'Feature Configuration'} = '^feature';
-$StereoType{'Interface'} = '^interface';
-$StereoType{'Trigger Procedure'} = '^proc_';
-$StereoType{'Trigger'} = '^trg_';
-$StereoType{'Service Class'} = '^service_class';
-$StereoType{'Service Order'} = '^service_order';
-$StereoType{'Service'} = '^service';
-
-$StereoType{'Logging'} = '^log';
-$StereoType{'Module'} = '^module';
 
 
 #
-# Just Code down here -- Nothing to see
+# Just Code below here -- nothing to see unless your feeling masochistic.
 #
 my $dbuser = $ENV{'USER'};
 my $database = $dbuser;
@@ -115,8 +102,6 @@ my $do_docbook = 1;
 
 my $dbisset = 0;
 my $fileisset = 0;
-my $ignore_constraints = 0;
-
 my $default_group = "                   whitespace for sort order ";
 
 for( my $i=0; $i <= $#ARGV; $i++ ) {
@@ -165,9 +150,6 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
     /^--no-uml$/     && do { $do_uml = 0;              last; };
     /^--no-docbook$/ && do { $do_docbook = 0;          last; };
 
-    /^-C$/          && do { $ignore_constraints = 0;   last; };
-    /^-c$/          && do { $ignore_constraints = 1;   last; };
-
     /^-S$/          && do { $showserials = 0;          last; };
     /^-s$/          && do { $showserials = 1;          last; };
 
@@ -196,24 +178,154 @@ END {
 }
 
 
-my $sql_Tables = qq{
-  SELECT relname as tablename
-       , pg_get_userbyid(relowner) AS tableowner
-       , relhasindex as hasindexes
-       , relhasrules as hasrules
-       , reltriggers as hastriggers
-       , pg_class.oid
-       , description as table_description
-       , relacl
-    FROM pg_class
-  LEFT OUTER JOIN pg_description on (   pg_class.oid = pg_description.objoid
-                                    AND pg_description.objsubid = 0)
-   WHERE (  relkind = 'r'::"char"
-         OR relkind = 's'::"char"
-         )
-     AND relname NOT LIKE 'pg_%';
+## Test for which version of doc structure it uses
+my $sql_GetVersion = qq{
+  SELECT CASE
+         WHEN (SELECT attrelid
+                 FROM pg_class
+                 JOIN pg_attribute ON (pg_class.oid = pg_attribute.attrelid)
+                WHERE relname = 'pg_description'
+                  AND attname = 'objsubid'
+              ) IS NULL THEN
+
+           cast('olddesc' as text)
+         ELSE
+
+           cast('newdesc' as text)
+         END as description_version;
 };
 
+# Queries which differ depending on version
+my $sql_Tables;
+my $sql_Columns;
+
+
+my $sth_GetVersion = $dbh->prepare($sql_GetVersion);
+
+$sth_GetVersion->execute();
+
+my $version = $sth_GetVersion->fetchrow_hashref;
+
+## 7.2 release changes the description methods
+if ($version->{'description_version'} eq 'newdesc') {
+  $sql_Tables = qq{
+    SELECT relname as tablename
+         , pg_get_userbyid(relowner) AS tableowner
+         , relhasindex as hasindexes
+         , relhasrules as hasrules
+         , reltriggers as hastriggers
+         , pg_class.oid
+         , description as table_description
+         , relacl
+      FROM pg_class
+      LEFT OUTER JOIN pg_description on (   pg_class.oid = pg_description.objoid
+                                      AND pg_description.objsubid = 0)
+     WHERE (  relkind = 'r'::"char"
+           OR relkind = 's'::"char"
+           )
+       AND relname NOT LIKE 'pg_%';
+  };
+
+  # - uses pg_class.oid
+  $sql_Columns = qq{
+    SELECT attname as column_name
+         , attlen as column_length
+         , CASE
+           WHEN attlen = -1 THEN
+              CASE 
+              WHEN typname = 'varchar' THEN
+                   typname || '(' || atttypmod - 4 || ')'
+              WHEN typname = 'bpchar' THEN
+                   'char' || '(' || atttypmod - 4 || ')'
+              WHEN typname = 'numeric' THEN
+                   format_type(atttypid, atttypmod)
+              ELSE
+                   typname
+              END
+           ELSE
+                typname
+           END
+           as column_type
+         , CASE
+           WHEN attnotnull IS TRUE THEN
+             'NOT NULL'::text
+           ELSE
+             ''::text
+           END as column_null
+         , adsrc as column_default
+         , description as column_description
+         , attnum
+      FROM pg_attribute 
+                 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
+      LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
+                                   AND pg_attribute.attnum = pg_attrdef.adnum)
+      LEFT OUTER JOIN pg_description ON (   pg_description.objoid = pg_attribute.attrelid
+                                       AND pg_description.objsubid = pg_attribute.attnum)
+     WHERE attnum > 0
+       AND (pg_description.classoid = (SELECT oid
+                                         FROM pg_class
+                                        WHERE relname = 'pg_class')
+           OR pg_description.classoid IS NULL)
+       AND attrelid = ?;
+  };
+
+## 7.1 or earlier has a different description structure
+} else {
+
+  $sql_Tables = qq{
+    SELECT relname as tablename
+         , pg_get_userbyid(relowner) AS tableowner
+         , relhasindex as hasindexes
+         , relhasrules as hasrules
+         , reltriggers as hastriggers
+         , pg_class.oid
+         , description as table_description
+      FROM pg_class
+      LEFT OUTER JOIN pg_description on (pg_class.oid = pg_description.objoid)
+     WHERE (  relkind = 'r'::"char"
+           OR relkind = 's'::"char"
+           )
+       AND relname NOT LIKE 'pg_%';
+  };
+
+  # - uses pg_class.oid
+  $sql_Columns = qq{
+    SELECT attname as column_name
+         , attlen as column_length
+         , CASE
+           WHEN attlen = -1 THEN
+              CASE 
+              WHEN typname = 'varchar' THEN
+                   typname || '(' || atttypmod - 4 || ')'
+              WHEN typname = 'bpchar' THEN
+                   'char' || '(' || atttypmod - 4 || ')'
+              WHEN typname = 'numeric' THEN
+                   format_type(atttypid, atttypmod)
+              ELSE
+                   typname
+              END
+           ELSE
+                typname
+           END
+           as column_type
+         , CASE
+           WHEN attnotnull IS TRUE THEN
+             'NOT NULL'::text
+           ELSE
+             ''::text
+           END as column_null
+         , adsrc as column_default
+         , description as column_description
+         , attnum
+      FROM pg_attribute 
+                 JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
+      LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
+                                    AND pg_attribute.attnum = pg_attrdef.adnum)
+      LEFT OUTER JOIN pg_description ON (pg_description.objoid = pg_attribute.oid)
+     WHERE attnum > 0
+       AND attrelid = ?;
+  };
+}
 
 # - uses pg_class.oid
 my $sql_Primary_Keys = qq{
@@ -262,51 +374,6 @@ my $sql_Foreign_Keys = qq{
      AND tgrelid = ?;
 };
 
-
-# - uses pg_class.oid
-my $sql_Columns = qq{
-  SELECT attname as column_name
-       , attlen as column_length
-       , CASE
-         WHEN attlen = -1 THEN
-            CASE 
-            WHEN typname = 'varchar' THEN
-                 typname || '(' || atttypmod - 4 || ')'
-            WHEN typname = 'bpchar' THEN
-                 'char' || '(' || atttypmod - 4 || ')'
-            WHEN typname = 'numeric' THEN
-                 format_type(atttypid, atttypmod)
-            ELSE
-                 typname
-            END
-         ELSE
-              typname
-         END
-         as column_type
-       , CASE
-         WHEN attnotnull IS TRUE THEN
-           'NOT NULL'::text
-         ELSE
-           ''::text
-         END as column_null
-       , adsrc as column_default
-       , description as column_description
-    FROM pg_attribute 
-              JOIN pg_type ON (pg_type.oid = pg_attribute.atttypid) 
-   LEFT OUTER JOIN pg_attrdef ON (   pg_attribute.attrelid = pg_attrdef.adrelid 
-                                 AND pg_attribute.attnum = pg_attrdef.adnum)
-   LEFT OUTER JOIN pg_description ON (   pg_description.objoid = pg_attribute.attrelid
-                                     AND pg_description.objsubid = pg_attribute.attnum)
-   WHERE attnum > 0
-     AND (pg_description.classoid = (SELECT oid
-                                     FROM pg_class
-                                    WHERE relname = 'pg_class')
-          OR pg_description.classoid IS NULL)
-     AND attrelid = ?
-ORDER BY attnum;
-};
-
-
 # - uses pg_class.oid
 my $sql_Constraint = qq{
   SELECT substr(rcsrc, 2, length(rcsrc) - 2) as constraint_source
@@ -349,6 +416,9 @@ EXPRESSIONFOUND:
 
   ## Store permissions
   my $acl = $tables->{'relacl'};
+
+  # Empty acl groups cause serious issues.
+  $acl ||= '';
 
   # Strip array forming 'junk'.
   $acl =~ s/^{//g;
@@ -404,10 +474,7 @@ EXPRESSIONFOUND:
   $sth_Constraint->execute($table_oid);
   while (my $cols = $sth_Constraint->fetchrow_hashref) {
     my $constraint_name = $cols->{'constraint_name'};
-
-    if (! $ignore_constraints) {
-      $structure{$group}{$table_name}{'CONSTRAINT'}{$constraint_name} = $cols->{'constraint_source'};
-    }
+    $structure{$group}{$table_name}{'CONSTRAINT'}{$constraint_name} = $cols->{'constraint_source'};
 
 #    print "        $constraint_name\n";
   }
@@ -417,7 +484,7 @@ EXPRESSIONFOUND:
   my $i = 1;
   while (my $cols = $sth_Columns->fetchrow_hashref) {
     my $column_name = $cols->{'column_name'};
-    $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'ORDER'} = $i;
+    $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'ORDER'} = $cols->{'attnum'};
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'PRIMARY KEY'} = 0;
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'FK'} = '';
     $structure{$group}{$table_name}{'COLUMN'}{$column_name}{'TYPE'} = $cols->{'column_type'};
@@ -591,6 +658,7 @@ sub write_index_structure($structure) {
 
         print FH '<tr>';
 
+        # Test for and resolv foreign keys
         if ($structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '') {
 
           my $fk_group;
@@ -599,9 +667,17 @@ sub write_index_structure($structure) {
               if ($fk_search_table eq $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) {
                 $fk_group = $fk_search_group;
 
-                # NOTE:  How do we get out of 2 loops quickly?
+                # Found our key, lets get out.
+                goto FKFOUND; 
               }
             }
+          }
+          FKFOUND:
+
+          # Test for whether we found a good Foreign key reference or not.
+          if (!defined($fk_group)) {
+            print "BAD FOREIGN KEY FROM $table TO ". $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ."\n";
+            print "Errors will occur due to this.  Please fix them and re-run postgresql_autodoc.pl\n";
           }
 
           print FH '<td><a href="#table_'. $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}
@@ -612,7 +688,8 @@ sub write_index_structure($structure) {
           }
 
           print FH $structure{$group}{$table}{'COLUMN'}{$column}{'FK'} .'</a>
-                    </td>';
+                  </td>';
+
         } else {
           print FH '<td></td>';
         }
@@ -675,7 +752,7 @@ sub write_index_structure($structure) {
       my $constraint_marker = 0;
       foreach my $constraint (sort keys %{$structure{$group}{$table}{'CONSTRAINT'}})  {
         if ($constraint_marker == 0) {
-          print FH '<br><table  width="100%" cellspacing="0" cellpadding="3" border="1">
+          print FH '<br><table width="100%" cellspacing="0" cellpadding="3" border="1">
                     <caption>';
                     
           if ($group ne $default_group) {
@@ -689,7 +766,7 @@ sub write_index_structure($structure) {
           $constraint_marker = 1;
         }
         print FH '<tr><td>'. $constraint .'</td>
-                      <td>'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'</td></tr>';
+                      <td><pre>'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'</pre></td></tr>';
       }
       if ($constraint_marker == 1) {
         print FH '</table>';
@@ -717,6 +794,95 @@ sub write_index_structure($structure) {
 
       if ($fk_marker == 1) {
         print FH '</ul></p>';
+      }
+
+
+      # List off permissions
+      my $perminserted = 0;
+      foreach my $user (sort keys %{$structure{$group}{$table}{'ACL'}}) {
+
+        # Lets not list the user unless they have atleast one permission
+        my $foundone = 0;
+        foreach my $perm (sort keys %{$structure{$group}{$table}{'ACL'}{$user}}) {
+          if ($structure{$group}{$table}{'ACL'}{$user}{$perm} == 1) {
+            $foundone = 1;
+          }
+        }
+
+        if ($foundone == 1) {
+          # Have we started the section yet?
+          if ($perminserted == 0) {
+            print FH '<table width="100%" cellspacing="0" cellpadding="3" border="1">';
+            print FH '<caption>'. xml_safe_chars('Permissions which apply to '. $table) .'</caption>';
+            print FH '<tr bgcolor="#E0E0EE">';
+            print FH '<th>'. xml_safe_chars('User') .'</th>';
+            print FH '<th>'. xml_safe_chars('Select') .'</th>';
+            print FH '<th>'. xml_safe_chars('Insert') .'</th>';
+            print FH '<th>'. xml_safe_chars('Update') .'</th>';
+            print FH '<th>'. xml_safe_chars('Delete') .'</th>';
+            print FH '<th>'. xml_safe_chars('Rule') .'</th>';
+            print FH '<th>'. xml_safe_chars('Reference') .'</th>';
+            print FH '<th>'. xml_safe_chars('Trigger') .'</th>';
+            print FH '</tr>';
+
+            $perminserted = 1;
+          }
+
+          print FH '<tr>';
+          print FH '<td>'. xml_safe_chars($user) .'</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'SELECT'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'SELECT'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'INSERT'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'INSERT'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'UPDATE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'UPDATE'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'DELETE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'DELETE'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'RULE'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'RULE'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'REFERENCES'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'REFERENCES'} == 1) {
+            print FH '*';
+          }
+          print FH '</td>';
+
+          print FH '<td>';
+          if (  defined($structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'})
+             && $structure{$group}{$table}{'ACL'}{$user}{'TRIGGER'} == 1) {
+            print FH '*';
+          }
+          print FH '</td></tr>';
+        }
+      }
+      if ($perminserted != 0) {
+        print FH '</table>';
       }
 
       print FH '<a href="#index">Index</a>';
@@ -815,7 +981,11 @@ sub write_uml_structure($structure) {
 
 
       my $constraintlist = "";
-      foreach my $constraint (sort keys %{$structure{$group}{$table}{'CONSTRAINT'}})  {
+      foreach my $constraintname (sort keys %{$structure{$group}{$table}{'CONSTRAINT'}})  {
+        my $constraint = $structure{$group}{$table}{'CONSTRAINT'}{$constraintname};
+
+        # Shrink constraints to something managable
+        $constraint =~ s/^(.{30}).{5,}(.{5})$/$1 ... $2/g;
 
         $constraintlist .= '
         <dia:composite type="umloperation">
@@ -837,7 +1007,7 @@ sub write_uml_structure($structure) {
           <dia:attribute name="parameters">
             <dia:composite type="umlparameter">
               <dia:attribute name="name">
-                <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'#') .'</dia:string>
+                <dia:string>'. xml_safe_chars('#'. $constraint .'#') .'</dia:string>
               </dia:attribute>
               <dia:attribute name="type">
                 <dia:string>##</dia:string>
@@ -855,7 +1025,11 @@ sub write_uml_structure($structure) {
 
 
       my $columnlist = "";
-      foreach my $column (sort keys %{$structure{$group}{$table}{'COLUMN'}})  {
+      foreach my $column (sort {   $structure{$group}{$table}{'COLUMN'}{$a}{'ORDER'} 
+                               <=> $structure{$group}{$table}{'COLUMN'}{$b}{'ORDER'}
+                               }
+                          keys %{$structure{$group}{$table}{'COLUMN'}})  {
+
         my $currentcolumn;
 
         if ($structure{$group}{$table}{'COLUMN'}{$column}{'PRIMARY KEY'} == 1) {
@@ -878,6 +1052,7 @@ sub write_uml_structure($structure) {
 
         $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} =~ tr/a-z/A-Z/;
 
+
         $columnlist .= '
         <dia:composite type="umlattribute">
           <dia:attribute name="name">
@@ -892,9 +1067,13 @@ sub write_uml_structure($structure) {
             <dia:string/>
           </dia:attribute>';
         } else {
+          # Shrink the default if necessary
+          my $default = $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'};
+          $default =~ s/^(.{17}).{5,}(.{5})$/$1 ... $2/g;
+        
           $columnlist .= '
           <dia:attribute name="value">
-            <dia:string>'. xml_safe_chars('#'. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} .'#') .'</dia:string>
+            <dia:string>'. xml_safe_chars('#'. $default .'#') .'</dia:string>
           </dia:attribute>';
         }
 
@@ -1053,7 +1232,9 @@ sub write_docbook_structure($structure) {
 
   sysopen(FH, $docbook_outputfile, O_WRONLY|O_EXCL|O_CREAT, 0644) or die "Can't open $docbook_outputfile: $!";
 
-  print FH '<appendix id="docguide" xreflabel="'. $database .' database schema"><title>'. $database .' Model</title>';
+  print FH '<appendix id="database-'. sgml_safe_id($database) .'" xreflabel="'
+         . xml_safe_chars($database) .' database schema">';
+  print FH '<title>'. $database .' Model</title>';
 
   ## Group Creation
   foreach my $group (sort keys %structure) {
@@ -1103,7 +1284,11 @@ sub write_docbook_structure($structure) {
       print FH '</row></thead>';
       print FH '<tbody>';
 
-      foreach my $column (sort keys %{$structure{$group}{$table}{'COLUMN'}})  {
+      foreach my $column (sort {   $structure{$group}{$table}{'COLUMN'}{$a}{'ORDER'} 
+                               <=> $structure{$group}{$table}{'COLUMN'}{$b}{'ORDER'}
+                               }
+                          keys %{$structure{$group}{$table}{'COLUMN'}})  {
+
 
         print FH '<row>';
 
@@ -1261,7 +1446,7 @@ ENDLOOP:
             print FH '<entry rotate="1"><para>'. xml_safe_chars('Reference') .'</para></entry>';
             print FH '<entry rotate="1"><para>'. xml_safe_chars('Trigger') .'</para></entry>';
             print FH '</row></thead><tbody>';
-            
+
             $perminserted = 1;
           }
 
@@ -1321,7 +1506,7 @@ ENDLOOP:
       if ($perminserted != 0) {
         print FH '</tbody></tgroup></table></para></section>';
       }
-      
+
       print FH '</section>';
     }
   }
@@ -1378,8 +1563,6 @@ Options:
 
   -s              Converts columns of int4 type with a sequence by default to SERIAL type (default)
   -S              Ignores SERIAL type entirely.  (No conversions).
-  -C              Enables display of constraints (default).
-  -C              Ignores additional constraints.
 
 USAGE
 ;
