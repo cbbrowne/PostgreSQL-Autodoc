@@ -1,5 +1,5 @@
 AC_PREREQ(2.53)
-AC_REVISION($Header: /cvsroot/pgsqlautodoc/autodoc/configure.ac,v 1.7 2003/11/08 02:14:53 rtaylor02 Exp $)
+AC_REVISION($Header: /cvsroot/autodoc/autodoc/configure.ac,v 1.1.1.1 2004/05/12 16:00:34 rbt Exp $)
 AC_INIT(postgresql_autodoc.pl)
 
 

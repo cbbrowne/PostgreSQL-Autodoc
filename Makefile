@@ -1,4 +1,4 @@
-# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.12 2003/12/07 21:09:44 rtaylor02 Exp $
+# $Header: /cvsroot/autodoc/autodoc/Makefile,v 1.1.1.1 2004/05/12 16:00:34 rbt Exp $
 
 TEMPLATES = dia.tmpl dot.tmpl html.tmpl xml.tmpl zigzag.dia.tmpl
 BINARY = postgresql_autodoc

@@ -1,13 +1,13 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.119 2004/03/12 21:47:13 rtaylor02 Exp $
+# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.3 2004/06/03 01:46:28 rbt Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.22
+# Postgres Auto-Doc Version 1.23
 
 # License
 # -------
-# Copyright (c) 2001, Rod Taylor
+# Copyright (c) 2001-2004, Rod Taylor
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -188,7 +188,8 @@ Msg
 my $dsn = "dbi:Pg:dbname=$database";
 $dsn .= ";host=$dbhost" if ( "$dbhost" ne "" );
 $dsn .= ";port=$dbport" if ( "$dbport" ne "" );
-my $dbh = DBI->connect( $dsn, $dbuser, $dbpass );
+my $dbh = DBI->connect( $dsn, $dbuser, $dbpass )
+	or triggerError("Unable to connect due to: $DBD::Pg::errstr");
 
 # Always disconnect from the database if a database handle is setup
 END {
@@ -607,7 +608,16 @@ else {
 }
 
 # Fetch CHECK constraints
-if ( $pgversion >= 70300 ) {
+if ( $pgversion >= 70400 ) {
+	$sql_Constraint = qq{
+	SELECT pg_get_constraintdef(oid) AS constraint_source
+		 , conname AS constraint_name
+	  FROM pg_constraint
+	 WHERE conrelid = ?
+	   AND contype = 'c';
+	};
+}
+elsif ( $pgversion >= 70300 ) {
 	$sql_Constraint = qq{
 	SELECT 'CHECK ' || pg_catalog.substr(consrc, 2, length(consrc) - 2) AS constraint_source
 		 , conname AS constraint_name
@@ -647,7 +657,7 @@ if ( $pgversion >= 70300 ) {
 
 	$sql_FunctionArg = qq{
 	  SELECT nspname AS namespace
-		   , pg_catalog.format_type(pg_type.oid, typlen) AS type_name
+		   , pg_catalog.format_type(pg_type.oid, typtypmod) AS type_name
 		FROM pg_catalog.pg_type
 		JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
 	   WHERE pg_type.oid = ?;
@@ -672,7 +682,7 @@ else {
 
 	$sql_FunctionArg = qq{
 	SELECT 'public' AS namespace
-		 , format_type(pg_type.oid, typlen) AS type_name
+		 , format_type(pg_type.oid, typtypmod) AS type_name
 	  FROM pg_type
 	 WHERE pg_type.oid = ?;
 	};
