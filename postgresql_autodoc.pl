@@ -1,13 +1,13 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.21 2008/03/12 19:00:56 rbt Exp $
+# $Header: /cvsroot/autodoc/autodoc/postgresql_autodoc.pl,v 1.27 2009/05/01 02:13:59 rbt Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.31
+# Postgres Auto-Doc Version 1.40
 
 # License
 # -------
-# Copyright (c) 2001-2007, Rod Taylor
+# Copyright (c) 2001-2009, Rod Taylor
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -91,6 +91,7 @@ sub main($) {
     my $fileisset = 0;
 
     my $only_schema;
+    my $only_matching;
 
     my $table_out;
 
@@ -177,6 +178,12 @@ sub main($) {
                 last;
             };
 
+            # User has requested only tables/objects matching a pattern
+            /^(-m|--matching)$/ && do {
+                $only_matching = $ARGV[ ++$i ];
+                last;
+            };
+
             # One might dump a table's set (comma-separated) or just one
             # If dumping a set of specific tables do NOT dump out the functions
             # in this database. Generates noise in the output
@@ -233,20 +240,22 @@ Msg
     $dsn .= ";port=$dbport" if ( "$dbport" ne "" );
 
     info_collect( [ $dsn, $dbuser, $dbpass ],
-        \%db, $database, $only_schema, $statistics, $table_out );
+        \%db, $database, $only_schema, $only_matching, $statistics,
+        $table_out );
 
     # Write out *ALL* templates
     write_using_templates( \%db, $database, $statistics, $template_path,
         $output_filename_base, $wanted_output );
-} ## end sub main($)
+}
 
 ##
 # info_collect
 #
 # Pull out all of the applicable information about a specific database
 sub info_collect {
-    my ( $dbConnect, $db, $database, $only_schema, $statistics, $table_out ) =
-      @_;
+    my ( $dbConnect, $db, $database, $only_schema, $only_matching, $statistics,
+        $table_out )
+      = @_;
 
     my $dbh = DBI->connect( @{$dbConnect} )
       or triggerError("Unable to connect due to: $DBI::errstr");
@@ -283,6 +292,12 @@ sub info_collect {
         $schemapattern = '^' . $only_schema . '$';
     }
 
+    # and only objects matching the specified pattern, if any
+    my $matchpattern = '';
+    if ( defined($only_matching) ) {
+        $matchpattern = $only_matching;
+    }
+
     #
     # List of queries which are used to gather information from the
     # database. The queries differ based on version but should
@@ -302,9 +317,6 @@ sub info_collect {
        SELECT nspname as namespace
             , relname as tablename
             , pg_catalog.pg_get_userbyid(relowner) AS tableowner
-            , relhasindex as hasindexes
-            , relhasrules as hasrules
-            , reltriggers as hastriggers
             , pg_class.oid
             , pg_catalog.obj_description(pg_class.oid, 'pg_class') as table_description
             , relacl
@@ -325,6 +337,7 @@ sub info_collect {
          FROM pg_catalog.pg_class
          JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
         WHERE relkind IN ('r', 's', 'v')
+          AND relname ~ '$matchpattern'
           AND nspname !~ '$system_schema_list'
           AND nspname ~ '$schemapattern' 
     };
@@ -490,88 +503,46 @@ sub info_collect {
 
     # Fetch CHECK constraints
     my $sql_Constraint;
-    if ( $dbh->{pg_server_version} >= 70400 ) {
-        $sql_Constraint = q{
-           SELECT pg_get_constraintdef(oid) AS constraint_source
-                , conname AS constraint_name
-             FROM pg_constraint
-            WHERE conrelid = ?
-              AND contype = 'c';
-        };
-    }
-    else {
-        $sql_Constraint = q{
-           SELECT 'CHECK ' || pg_catalog.substr(consrc, 2, length(consrc) - 2) AS constraint_source
-                , conname AS constraint_name
-             FROM pg_constraint
-            WHERE conrelid = ?
-              AND contype = 'c';
-        };
-    }
+    $sql_Constraint = q{
+       SELECT pg_get_constraintdef(oid) AS constraint_source
+            , conname AS constraint_name
+         FROM pg_constraint
+        WHERE conrelid = ?
+          AND contype = 'c';
+    };
 
     # Query for function information
     my $sql_Function;
     my $sql_FunctionArg;
-    if ( $dbh->{pg_server_version} >= 80000 ) {
-        $sql_Function = qq{
-           SELECT proname AS function_name
-                , nspname AS namespace
-                , lanname AS language_name
-                , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
-                , proargtypes AS function_args
-                , proargnames AS function_arg_names
-                , prosrc AS source_code
-                , proretset AS returns_set
-                , prorettype AS return_type
-             FROM pg_catalog.pg_proc
-             JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
-             JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
-             JOIN pg_catalog.pg_type ON (prorettype = pg_type.oid)
-            WHERE pg_namespace.nspname !~ '$system_schema_list'
-              AND pg_namespace.nspname ~ '$schemapattern'
-              AND proname != 'plpgsql_call_handler';
-        };
+    $sql_Function = qq{
+       SELECT proname AS function_name
+            , nspname AS namespace
+            , lanname AS language_name
+            , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
+            , proargtypes AS function_args
+            , proargnames AS function_arg_names
+            , prosrc AS source_code
+            , proretset AS returns_set
+            , prorettype AS return_type
+         FROM pg_catalog.pg_proc
+         JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
+         JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
+         JOIN pg_catalog.pg_type ON (prorettype = pg_type.oid)
+        WHERE pg_namespace.nspname !~ '$system_schema_list'
+          AND pg_namespace.nspname ~ '$schemapattern'
+          AND proname ~ '$matchpattern'
+          AND proname != 'plpgsql_call_handler';
+    };
 
-        $sql_FunctionArg = q{
-           SELECT nspname AS namespace
-                , replace(pg_catalog.format_type(pg_type.oid, typtypmod)
-                         , nspname ||'.'
-                         , '') AS type_name
-             FROM pg_catalog.pg_type
-             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
-            WHERE pg_type.oid = ?;
-        };
-    }
-    else {
-        $sql_Function = qq{
-           SELECT proname AS function_name
-                , nspname AS namespace
-                , lanname AS language_name
-                , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
-                , proargtypes AS function_args
-                , NULL AS function_arg_names
-                , prosrc AS source_code
-                , proretset AS returns_set
-                , prorettype AS return_type
-             FROM pg_catalog.pg_proc
-             JOIN pg_catalog.pg_language ON (pg_language.oid = prolang)
-             JOIN pg_catalog.pg_namespace ON (pronamespace = pg_namespace.oid)
-             JOIN pg_catalog.pg_type ON (prorettype = pg_type.oid)
-            WHERE pg_namespace.nspname !~ '$system_schema_list'
-              AND pg_namespace.nspname ~ '$schemapattern'
-              AND proname != 'plpgsql_call_handler';
-        };
-
-        $sql_FunctionArg = q{
-           SELECT nspname AS namespace
-                , replace(pg_catalog.format_type(pg_type.oid, typtypmod)
-                         , nspname ||'.'
-                         , '') AS type_name
-             FROM pg_catalog.pg_type
-             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
-            WHERE pg_type.oid = ?;
-        };
-    }
+    $sql_FunctionArg = q{
+       SELECT nspname AS namespace
+            , replace( pg_catalog.format_type(pg_type.oid, typtypmod)
+                     , nspname ||'.'
+                     , '') AS type_name
+         FROM pg_catalog.pg_type
+         JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
+        WHERE pg_type.oid = ?;
+    };
 
     # Fetch schema information.
     my $sql_Schema = qq{
@@ -917,7 +888,6 @@ sub info_collect {
     $sth_Function->execute();
     while ( my $functions = $sth_Function->fetchrow_hashref and not $table_out )
     {
-        my $functionname = $functions->{'function_name'} . '( ';
         my $schema       = $functions->{'namespace'};
         my $comment      = $functions->{'comment'};
         my $functionargs = $functions->{'function_args'};
@@ -926,35 +896,29 @@ sub info_collect {
 
         # Pre-setup argument names when available.
         my $argnames = $functions->{'function_arg_names'};
-        my @names;
 
-        if ( defined($argnames) ) {
-            $argnames =~ s/{(.*)}/$1/;
-            @names = split( ',', $argnames );
-        }
-
-        # Setup full argument types -- including the name prefix
-        foreach my $type (@types) {
+        # Setup full argument types including the parameter name
+        my @parameters;
+        for my $type (@types) {
             $sth_FunctionArg->execute($type);
 
             my $hash = $sth_FunctionArg->fetchrow_hashref;
 
-            if ( $count > 0 ) {
-                $functionname .= ', ';
-            }
-
-            if ( scalar(@names) > 0 ) {
-                $functionname .= $names[$count] . ' ';
+            my $parameter = '';
+            if ($argnames) {
+                $parameter .= sprintf( '%s ', pop( @{$argnames} ) );
             }
 
             if ( $hash->{'namespace'} ne $system_schema ) {
-                $functionname .= $hash->{'namespace'} . '.';
+                $parameter .= $hash->{'namespace'} . '.';
             }
-            $functionname .= $hash->{'type_name'};
+            $parameter .= $hash->{'type_name'};
 
-            $count++;
+            push( @parameters, $parameter );
         }
-        $functionname .= ' )';
+        my $functionname = sprintf( '%s(%s)',
+            $functions->{'function_name'},
+            join( ', ', @parameters ) );
 
         my $ret_type = $functions->{'returns_set'} ? 'SET OF ' : '';
         $sth_FunctionArg->execute( $functions->{'return_type'} );
@@ -995,7 +959,7 @@ sub info_collect {
 
     $dbh->disconnect;
 
-} ## end sub info_collect($$$$$)
+}
 
 #####
 # write_using_templates
@@ -1651,7 +1615,7 @@ sub write_using_templates($$$$$) {
           or die "Can't open $output_filename: $!";
         print FH $template->output();
     }
-} ## end sub write_using_templates($$$$$)
+}
 
 ######
 # sgml_safe_id
@@ -1841,7 +1805,7 @@ sub sql_prettyprint($) {
     }
 
     return $result;
-} ## end sub sql_prettyprint($)
+}
 
 ##
 # triggerError
@@ -1880,11 +1844,14 @@ Options:
   -l <path>       Path to the templates (default: @@TEMPLATE-DIR@@)
   -t <output>     Type of output wanted (default: All in template library)
 
-  -s <schema>      Specify a specific schema to match. Technically this is a regular
+  -s <schema>     Specify a specific schema to match. Technically this is a regular
                   expression but anything other than a specific name may have unusual
                   results.
+
+  -m <regexp>     Show only tables/objects with names matching the specified regular expression.
+
   --table=<args>  Tables to export. Multiple tables may be provided using a
-                  comma-separated list.
+                  comma-separated list. I.e. table,table2,table3
 
   --statistics    In 7.4 and later, with the contrib module pgstattuple installed we
                   can gather statistics on the tables in the database 
