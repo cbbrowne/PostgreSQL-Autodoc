@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.114 2003/11/14 02:58:54 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.119 2004/03/12 21:47:13 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.20
+# Postgres Auto-Doc Version 1.22
 
 # License
 # -------
@@ -256,8 +256,8 @@ my $sql_Table_Statistics;
 # Pull out a list of tables, views and special structures. 
 if ( $pgversion >= 70300 ) {
 	$sql_Tables = qq{
-	SELECT pg_catalog.quote_ident(nspname) as namespace
-		 , pg_catalog.quote_ident(relname) as tablename
+	SELECT nspname as namespace
+		 , relname as tablename
 		 , pg_catalog.pg_get_userbyid(relowner) AS tableowner
 		 , relhasindex as hasindexes
 		 , relhasrules as hasrules
@@ -288,7 +288,7 @@ if ( $pgversion >= 70300 ) {
 
 	# - uses pg_class.oid
 	$sql_Columns = qq{
-	SELECT pg_catalog.quote_ident(attname) as column_name
+	SELECT attname as column_name
 		 , attlen as column_length
 		 , CASE
 		   WHEN pg_type.typname = 'int4'
@@ -342,8 +342,8 @@ if ( $pgversion >= 70300 ) {
 }
 elsif ( $pgversion >= 70200 ) {
 	$sql_Tables = qq{
-	SELECT quote_ident('public') as namespace
-		 , quote_ident(relname) as tablename
+	SELECT 'public' as namespace
+		 , relname as tablename
 		 , pg_get_userbyid(relowner) AS tableowner
 		 , relhasindex as hasindexes
 		 , relhasrules as hasrules
@@ -372,7 +372,7 @@ elsif ( $pgversion >= 70200 ) {
 
 	# - uses pg_class.oid
 	$sql_Columns = qq{
-	SELECT quote_ident(attname) as column_name
+	SELECT attname as column_name
 		 , attlen as column_length
 		 , CASE
 		   WHEN pg_type.typname = 'int4'
@@ -412,8 +412,8 @@ else {
 	# 7.1 or earlier has a different description structure
 
 	$sql_Tables = qq{
-	SELECT quote_ident('public') as namespace
-		 , quote_ident(relname) as tablename
+	SELECT 'public' as namespace
+		 , relname as tablename
 		 , pg_get_userbyid(relowner) AS tableowner
 		 , relhasindex as hasindexes
 		 , relhasrules as hasrules
@@ -429,7 +429,7 @@ else {
 
 	# - uses pg_class.oid
 	$sql_Columns = qq{
-	SELECT quote_ident(attname) as column_name
+	SELECT attname as column_name
 		 , attlen as column_length
 		 , CASE
 		   WHEN pg_type.typname = 'int4'
@@ -516,7 +516,7 @@ if ($pgversion >= 70300)
 if ($pgversion >= 70300)
 {
 	$sql_Primary_Keys = qq{
-	SELECT pg_catalog.quote_ident(conname) AS constraint_name
+	SELECT conname AS constraint_name
 		 , pg_catalog.pg_get_indexdef(d.objid) AS constraint_definition
 		 , CASE
 		   WHEN contype = 'p' THEN
@@ -534,7 +534,7 @@ if ($pgversion >= 70300)
 } else {
 	# - uses pg_class.oid
 	$sql_Primary_Keys = qq{
-	SELECT quote_ident(i.relname) AS constraint_name
+	SELECT i.relname AS constraint_name
 		 , pg_get_indexdef(pg_index.indexrelid) AS constraint_definition
 		 , CASE
 		   WHEN indisprimary THEN
@@ -558,9 +558,9 @@ if ($pgversion >= 70300)
 if ( $pgversion >= 70300 ) {
 	$sql_Foreign_Keys = qq{
 	SELECT pg_constraint.oid
-		 , pg_catalog.quote_ident(pg_namespace.nspname) AS namespace
+		 , pg_namespace.nspname AS namespace
 		 , CASE WHEN substring(pg_constraint.conname FROM 1 FOR 1) = '\$' THEN ''
-		   ELSE pg_catalog.quote_ident(pg_constraint.conname)
+		   ELSE pg_constraint.conname
 		   END AS constraint_name
 		 , conkey AS constraint_key
 		 , confkey AS constraint_fkey
@@ -577,9 +577,9 @@ if ( $pgversion >= 70300 ) {
 	};
 
 	$sql_Foreign_Key_Arg = qq{
-	 SELECT pg_catalog.quote_ident(attname) AS attribute_name
-		  , pg_catalog.quote_ident(relname) AS relation_name
-		  , pg_catalog.quote_ident(nspname) AS namespace
+	 SELECT attname AS attribute_name
+		  , relname AS relation_name
+		  , nspname AS namespace
 	   FROM pg_catalog.pg_attribute
 	   JOIN pg_catalog.pg_class ON (pg_class.oid = attrelid)
 	   JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
@@ -591,9 +591,9 @@ else {
 	# - uses pg_class.oid
 	$sql_Foreign_Keys = q{
 	SELECT oid
-		 , quote_ident('public') as namespace
+		 , 'public' AS namespace
 		 , CASE WHEN substring(tgname from 1 for 1) = '$' THEN ''
-		   ELSE quote_ident(tgname)
+		   ELSE tgname
 		   END AS constraint_name
 		 , tgnargs AS number_args
 		 , tgargs AS args
@@ -610,7 +610,7 @@ else {
 if ( $pgversion >= 70300 ) {
 	$sql_Constraint = qq{
 	SELECT 'CHECK ' || pg_catalog.substr(consrc, 2, length(consrc) - 2) AS constraint_source
-		 , pg_catalog.quote_ident(conname) AS constraint_name
+		 , conname AS constraint_name
 	  FROM pg_constraint
 	 WHERE conrelid = ?
 	   AND contype = 'c';
@@ -619,7 +619,7 @@ if ( $pgversion >= 70300 ) {
 else {
 	$sql_Constraint = qq{
 	SELECT 'CHECK ' || substr(rcsrc, 2, length(rcsrc) - 2) AS constraint_source
-		 , quote_ident(rcname) AS constraint_name
+		 , rcname AS constraint_name
 	  FROM pg_relcheck
 	 WHERE rcrelid = ?;
 	};
@@ -628,9 +628,9 @@ else {
 # Query for function information
 if ( $pgversion >= 70300 ) {
 	$sql_Function = qq{
-	  SELECT pg_catalog.quote_ident(proname) AS function_name
-		   , pg_catalog.quote_ident(nspname) AS namespace
-		   , pg_catalog.quote_ident(lanname) AS language_name
+	  SELECT proname AS function_name
+		   , nspname AS namespace
+		   , lanname AS language_name
 		   , pg_catalog.obj_description(pg_proc.oid, 'pg_proc') AS comment
 		   , proargtypes AS function_args
 		   , prosrc AS source_code
@@ -646,7 +646,7 @@ if ( $pgversion >= 70300 ) {
 	};
 
 	$sql_FunctionArg = qq{
-	  SELECT pg_catalog.quote_ident(nspname) AS namespace
+	  SELECT nspname AS namespace
 		   , pg_catalog.format_type(pg_type.oid, typlen) AS type_name
 		FROM pg_catalog.pg_type
 		JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = typnamespace)
@@ -655,9 +655,9 @@ if ( $pgversion >= 70300 ) {
 }
 else {
 	$sql_Function = qq{
-	SELECT quote_ident(proname) AS function_name
-		 , quote_ident('public') AS namespace
-		 , quote_ident(lanname) AS language_name
+	SELECT proname AS function_name
+		 , 'public' AS namespace
+		 , lanname AS language_name
 		 , description AS comment
 		 , proargtypes AS function_args
 		 , prosrc AS source_code
@@ -671,7 +671,7 @@ else {
 	 };
 
 	$sql_FunctionArg = qq{
-	SELECT quote_ident('public') AS namespace
+	SELECT 'public' AS namespace
 		 , format_type(pg_type.oid, typlen) AS type_name
 	  FROM pg_type
 	 WHERE pg_type.oid = ?;
@@ -682,7 +682,7 @@ else {
 if ( $pgversion >= 70300 ) {
 	$sql_Schema = qq{
 	SELECT pg_catalog.obj_description(oid, 'pg_namespace') AS comment
-		 , pg_catalog.quote_ident(nspname) as namespace
+		 , nspname as namespace
 	  FROM pg_catalog.pg_namespace;
 	};
 }
@@ -756,13 +756,17 @@ while ( my $tables = $sth_Tables->fetchrow_hashref ) {
 	$acl =~ s/}$//g;
 	$acl =~ s/"//g;
 
+	# Foreach acl
 	foreach ( split ( /\,/, $acl ) ) {
-		my ( $user, $permissions ) = split ( /=/, $_ );
+		my ( $user, $raw_permissions ) = split ( /=/, $_ );
 
-		if ( defined($permissions) ) {
+		if ( defined($raw_permissions) ) {
 			if ( $user eq '' ) {
 				$user = 'PUBLIC';
 			}
+
+			# The section after the / is the user who granted the permissions
+			my ( $permissions, $granting_user) = split ( /\//, $raw_permissions );
 
 			# Break down permissions to individual flags
 			if ( $permissions =~ /a/ ) {
@@ -1145,6 +1149,7 @@ sub write_using_templates
 							column_fk_keygroup => $fkgroup,
 							column_fk_schema => $fkschema,
 							column_fk_schema_dbk => docbook($fkschema),
+							column_fk_schema_dot => graphviz($fkschema),
 							column_fk_sgmlid => $fksgmlid,
 							column_fk_table => $fktable,
 							column_fk_table_dbk => docbook($fktable),
@@ -1162,6 +1167,7 @@ sub write_using_templates
 				push @columns, {
 					column => $column,
 					column_dbk => docbook($column),
+					column_dot => graphviz($column),
 					column_default => $structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'},
 					column_default_dbk => docbook($structure{$schema}{$table}{'COLUMN'}{$column}{'DEFAULT'}),
 					column_default_short => $shortdefault,
@@ -1198,6 +1204,7 @@ sub write_using_templates
 					constraint_short_dbk => docbook($shortcon),
 					table => $table,
 					table_dbk => docbook($table),
+					table_dot => graphviz($table),
 				};
 			}
 
@@ -1211,8 +1218,10 @@ sub write_using_templates
 					index_name_dbk => docbook($index),
 					table => $table,
 					table_dbk => docbook($table),
+					table_dot => graphviz($table),
 					schema => $schema,
 					schema_dbk => docbook($schema),
+					schema_dot => graphviz($schema),
 				};
 			}
 
@@ -1247,8 +1256,10 @@ sub write_using_templates
 									fk_sgmlid => $fksgmlid,
 									fk_schema => $fk_schema,
 									fk_schema_dbk => docbook($fk_schema),
+									fk_schema_dot => graphviz($fk_schema),
 									fk_table => $fk_table,
 									fk_table_dbk => docbook($fk_table),
+									fk_table_dot => graphviz($fk_table),
 								};
 
 								# only have the count if there is more than 1 schema
@@ -1269,8 +1280,10 @@ sub write_using_templates
 				push @permissions, {
 					schema => $schema,
 					schema_dbk => docbook($schema),
+					schema_dot => graphviz($schema),
 					table => $table,
 					table_dbk => docbook($table),
+					table_dot => graphviz($table),
 					user => $user,
 					user_dbk => docbook($user),
 				};
@@ -1298,6 +1311,7 @@ sub write_using_templates
 
 				schema => $schema,
 				schema_dbk => docbook($schema),
+				schema_dot => graphviz($schema),
 				schema_sgmlid => sgml_safe_id($schema.".schema"),
 
 				# Statistics
@@ -1315,6 +1329,7 @@ sub write_using_templates
 
 			  	table => $table,
 			  	table_dbk => docbook($table),
+			  	table_dot => graphviz($table),
 				table_sgmlid => sgml_safe_id(join('.', $schema, $structure{$schema}{$table}{'TYPE'}, $table)),
 				table_comment => $structure{$schema}{$table}{'DESCRIPTION'},
 				table_comment_dbk => docbook($structure{$schema}{$table}{'DESCRIPTION'}),
@@ -1347,6 +1362,7 @@ sub write_using_templates
 				function_source => $struct{'FUNCTION'}{$schema}{$function}{'SOURCE'},
 				schema => $schema,
 				schema_dbk => docbook($schema),
+				schema_dot => graphviz($schema),
 				schema_sgmlid => sgml_safe_id($schema.".schema"),
 			};
 
@@ -1359,6 +1375,7 @@ sub write_using_templates
 		push @schemas, {
 			schema => $schema,
 			schema_dbk => docbook($schema),
+			schema_dot => graphviz($schema),
 			schema_sgmlid => sgml_safe_id($schema.".schema"),
 			schema_comment => $struct{'SCHEMA'}{$schema}{'COMMENT'},
 			schema_comment_dbk => docbook($struct{'SCHEMA'}{$schema}{'COMMENT'}),
@@ -1585,13 +1602,10 @@ sub docbook($) {
 sub graphviz($) {
 	my $string = shift;
 
-	if ( defined($string) ) {
-		$string =~ s/([\s"'])/\\$1/g;
-	}
-	else {
-		# Return an empty string when all else fails
-		$string = '';
-	}
+	# Ensure we don't return an least a empty string
+	$string = '' if (!defined($string));
+
+	$string =~ s/([\s"'])/\\$1/g;
 
 	return ($string);
 }

@@ -1,6 +1,6 @@
-# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.11 2003/08/26 03:16:04 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/Makefile,v 1.12 2003/12/07 21:09:44 rtaylor02 Exp $
 
-TEMPLATES = dia.tmpl dot.tmpl html.tmpl xml.tmpl
+TEMPLATES = dia.tmpl dot.tmpl html.tmpl xml.tmpl zigzag.dia.tmpl
 BINARY = postgresql_autodoc
 CONFIGFILE = config.mk
 
