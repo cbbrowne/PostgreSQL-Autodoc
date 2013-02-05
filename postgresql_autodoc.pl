@@ -1,7 +1,7 @@
 #!/usr/bin/perl
-# $Id: postgresql_autodoc.pl,v 1.15 2001/11/13 19:37:03 rbt Exp $
+# $Id: postgresql_autodoc.pl,v 1.19 2001/12/18 00:37:05 rbt Exp $
 
-# Postgres Auto-Doc Version 0.20
+# Postgres Auto-Doc Version 0.31
 
 # Installation Steps
 # ------------------
@@ -77,13 +77,10 @@ use Fcntl;
 # to seperate tables again.
 
 my %StereoType;
-$StereoType{'User'} = '^(user|account)';
-$StereoType{'Service'} = '^service[_]?(?!order)';
-$StereoType{'Triggers'} = '^(proc|trg)_';
-$StereoType{'Log'} = '^log_';
-$StereoType{'Contact'} = '^contact';
-$StereoType{'Service Order'} = '^service_order';
-$StereoType{'Dedicated'} = '^dedicated_';
+
+# Stereo Type Example.  Groups all tables beginning with user or account into StereoType 'User'
+#     $StereoType{'User'} = '^(user|account)';
+
 
 #
 # Just Code down here -- Nothing to see
@@ -94,11 +91,13 @@ my $dbpass = "";
 my $dbport = "";
 my $dbhost = "";
 my $index_outputfile = "$database.html";
+my $docbook_outputfile = "$database.sgml";
 my $uml_outputfile = "$database.dia";
 my $showserials = 1;
 
 my $do_index = 1;
 my $do_uml = 1;
+my $do_docbook = 1;
 
 my $dbisset = 0;
 my $fileisset = 0;
@@ -112,6 +111,7 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                             if (! $fileisset) {
                               $uml_outputfile = $database . '.dia';
                               $index_outputfile = $database . '.html';
+                              $docbook_outputfile = $database . '.sgml';
                             }
                             last;
                           };
@@ -122,6 +122,7 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                               if (! $fileisset) {
                                 $uml_outputfile = $database . '.dia';
                                 $index_outputfile = $database . '.html';
+                                $docbook_outputfile = $database . '.sgml';
                               }
                             }
                             last;
@@ -141,8 +142,9 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
                             last;
                           };
 
-    /^--no-index$/  && do { $do_index = 0;         last; };
-    /^--no-uml$/    && do { $do_uml = 0;           last; };
+    /^--no-index$/   && do { $do_index = 0;         last; };
+    /^--no-uml$/     && do { $do_uml = 0;           last; };
+    /^--no-docbook$/ && do { $do_docbook = 0;       last; };
 
     /^-S$/          && do { $showserials = 0;          last; };
     /^-s$/          && do { $showserials = 1;          last; };
@@ -154,7 +156,7 @@ for( my $i=0; $i <= $#ARGV; $i++ ) {
 }
 
 if ($#ARGV <= 0) {
-  print "No arguments set.  Use 'postgres_to_dia.pl --help' for help\n\nConnecting to database '$database' as user '$dbuser'\n\n";
+  print "No arguments set.  Use 'postgres_autodoc.pl --help' for help\n\nConnecting to database '$database' as user '$dbuser'\n\n";
 }
 
 my $dsn = "dbi:Pg:dbname=$database";
@@ -312,9 +314,10 @@ while (my $tables = $sth_Tables->fetchrow_hashref) {
     if ($table_name =~ /$StereoType{$ref}/) {
       $group = $ref;
 
-      next; 
+      goto EXPRESSIONFOUND; 
     }
   }
+EXPRESSIONFOUND:
 
   if ($group eq '') {
     $group = $default_group;
@@ -441,6 +444,10 @@ if ($do_uml == 1) {
 
 if ($do_index == 1) {
   &write_index_structure(%structure);
+}
+
+if ($do_docbook == 1) {
+  &write_docbook_structure(%structure);
 }
 
 
@@ -705,8 +712,13 @@ sub write_uml_structure($structure) {
   my %tableids;
 
   foreach my $group (sort keys %structure) {
-    print FH '
-    <dia:group>';
+
+    if ($group ne $default_group) {
+      # Don't group the individual tables.
+
+      print FH '
+      <dia:group>';
+    }
 
     foreach my $table (sort keys %{$structure{$group}}) {
 
@@ -885,8 +897,10 @@ sub write_uml_structure($structure) {
     </dia:object>';
     }
 
-    print FH '
-    </dia:group>';
+    if ($group ne $default_group) {
+      print FH '
+      </dia:group>';
+    }
   }
 
   foreach my $group (sort keys %structure) {
@@ -945,8 +959,197 @@ sub write_uml_structure($structure) {
 }
 
 
-sub xml_safe_chars {
+#####################################
+sub write_docbook_structure($structure) {
 
+  sysopen(FH, $docbook_outputfile, O_WRONLY|O_EXCL|O_CREAT, 0644) or die "Can't open $docbook_outputfile: $!";
+
+  print FH '<appendix id="docguide" xreflabel="Schema '. $database .'"><title>'. $database .' Model</title>';
+
+  ## Group Creation
+  foreach my $group (sort keys %structure) {
+
+    foreach my $table (sort keys %{$structure{$group}}) {
+
+      # Section Identifier
+      print FH '<sect1 id="'. sgml_safe_id($database) .'-table-'.  sgml_safe_id($table)
+               .'" xreflabel="Table ';
+
+      if ($group ne $default_group) {
+        print FH $group .' - ';
+      }
+
+      print FH $table .'">';
+
+
+      # Section Title
+      print FH '<title>';
+
+      if ($group ne $default_group) {
+        print FH  $group .' - ';
+      }
+
+      print FH $table .'</title>';
+
+
+      # Relation Description
+      print FH '<para>'. $structure{$group}{$table}{'DESCRIPTION'} .'</para>';
+
+      # Table structure
+      print FH '<table><title>';
+
+      if ($group ne $default_group) {
+        print FH $group .' - ';
+      }
+
+      print FH  'Structure of <structname>'. $table .'</structname></title><tgroup cols="4">';
+
+      print FH '<thead><row>';
+      print FH '<entry>Name</entry>';
+      print FH '<entry>Type</entry>';
+      print FH '<entry>References</entry>';
+      print FH '<entry>Description</entry>';
+      print FH '</row></thead>';
+      print FH '<tbody>';
+
+      foreach my $column (sort keys %{$structure{$group}{$table}{'COLUMN'}})  {
+
+        print FH '<row>';
+
+        print FH '<entry>'. $column .'</entry>
+                  <entry>'. $structure{$group}{$table}{'COLUMN'}{$column}{'TYPE'} .'</entry>';
+
+        if ($structure{$group}{$table}{'COLUMN'}{$column}{'FK'} ne '') {
+
+          my $fk_group;
+          foreach my $fk_search_group (sort keys %structure) {
+            foreach my $fk_search_table (sort keys %{$structure{$fk_search_group}}) {
+              if ($fk_search_table eq $structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) {
+                $fk_group = $fk_search_group;
+
+                goto ENDLOOP # Get me out of here...
+              }
+            }
+          }
+ENDLOOP:
+
+          print FH '<entry><xref linkend="'. sgml_safe_id($database) .'-table-'. 
+                    sgml_safe_id($structure{$group}{$table}{'COLUMN'}{$column}{'FK'}) . '"></entry>';
+
+        } else {
+          print FH '<entry></entry>';
+        }
+
+        print FH '<entry>';
+
+
+        my $liststarted = 0;
+
+        if ($structure{$group}{$table}{'COLUMN'}{$column}{'NULL'} ne '') {
+          if ($liststarted == 0) {
+            print FH '<simplelist>';
+            $liststarted = 1;
+          }
+          print FH '<member>'. $structure{$group}{$table}{'COLUMN'}{$column}{'NULL'} .'</member>';
+        }
+
+        if ($structure{$group}{$table}{'COLUMN'}{$column}{'PRIMARY KEY'} == 1) {
+          if ($liststarted == 0) {
+            print FH '<simplelist>';
+            $liststarted = 1;
+          }
+          print FH '<member>PRIMARY KEY</member>';
+        }
+
+        if (exists($structure{$group}{$table}{'COLUMN'}{$column}{'UNIQUE'})) {
+          if ($liststarted == 0) {
+            print FH '<simplelist>';
+            $liststarted = 1;
+          }
+          print FH '<member>UNIQUE</member>';
+        }
+
+        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'} ne '') {
+          if ($liststarted == 0) {
+            print FH '<simplelist>';
+            $liststarted = 1;
+          }
+          print FH '<member>DEFAULT '. $structure{$group}{$table}{'COLUMN'}{$column}{'DEFAULT'}
+                 . '</member>';
+        }
+        
+        if ($liststarted != 0) {
+          print FH '</simplelist>';
+        }
+
+        if ($structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'} ne '') {
+          print FH '<para>'. $structure{$group}{$table}{'COLUMN'}{$column}{'DESCRIPTION'} .'</para>';
+        }
+
+        print FH '</entry>';
+
+        print FH '</row>';
+      }
+      print FH '</tbody></tgroup></table>';
+
+
+      # Constraint List
+      my $constraintstart = 0;
+      foreach my $constraint (sort keys %{$structure{$group}{$table}{'CONSTRAINT'}})  {
+        if ($constraintstart == 0) {
+          print FH '<sect2><title>Constraints of table ';
+
+          if ($group ne $default_group) {
+            print FH $group .' - ';
+          }
+          print FH $table .'.</title><para>'; 
+
+          print FH '<simplelist>';
+
+          $constraintstart = 1;
+        }
+        print FH '<member>'. $structure{$group}{$table}{'CONSTRAINT'}{$constraint} .'</member>';
+      }
+      if ($constraintstart != 0) {
+        print FH '</simplelist></para></sect2>';
+      }
+
+      # Foreign Key Discovery
+      my $fkinserted = 0;
+      foreach my $fk_group (sort keys %structure) {
+        foreach my $fk_table (sort keys %{$structure{$fk_group}}) {
+          foreach my $fk_column (sort keys %{$structure{$fk_group}{$fk_table}{'COLUMN'}})  {
+            if ($structure{$fk_group}{$fk_table}{'COLUMN'}{$fk_column}{'FK'} eq $table) {
+              if ($fkinserted == 0) {
+                print FH '<sect2><title>Foreign Key Constrained</title>
+                          <para>Tables referencing '. $table .' via Foreign Key Constraints</para><para>';
+
+                print FH '<simplelist>';
+
+                $fkinserted = 1;
+              }
+
+              print FH '<member><xref linkend="'. sgml_safe_id($database) .'-table-'. 
+                       sgml_safe_id($fk_table) .'"></member>';
+            }
+          }
+        }
+      }
+      if ($fkinserted != 0) {
+        print FH '</simplelist></para></sect2>';
+      }
+
+      print FH '</sect1>';
+    }
+  }
+  print FH '</appendix>';
+
+}
+
+
+
+# Convert various characters to their 'XML Safe' version
+sub xml_safe_chars {
   my $string = shift;
 
   $string =~ s/&(?!(amp|lt|gr|apos|quot);)/&amp;/g;
@@ -956,6 +1159,15 @@ sub xml_safe_chars {
   $string =~ s/"/&quot;/g;
 
   return ($string);
+}
+
+# Safe SGML ID Character replacement
+sub sgml_safe_id {
+  my $string = shift;
+
+  $string =~ s/_/-/g;
+  
+  return($string);
 }
 
 
@@ -975,6 +1187,7 @@ Options:
 
   --no-index      Do NOT generate HTML index
   --no-uml        Do NOT generate XML dia file
+  --no-docbook    Do NOT generate DocBook SGML file(s)
 
   -s              Converts columns of int4 type with a sequence by default to SERIAL type
   -S              Ignores SERIAL type entirely.  (No conversions).
