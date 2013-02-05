@@ -1366,7 +1366,7 @@ fi
 for module in DBI DBD::Pg Fcntl HTML::Template ; do
 	echo "$as_me:$LINENO: checking ${module}" >&5
 echo $ECHO_N "checking ${module}... $ECHO_C" >&6
-	if ( ! ${PERL} -e "use ${module}" 2>&1 /dev/null ); then
+	if  ! (${PERL} -e "use ${module}" 2>&1 /dev/null ) ; then
 		echo "$as_me:$LINENO: result: no" >&5
 echo "${ECHO_T}no" >&6
 		{ { echo "$as_me:$LINENO: error: Perl module ${module} is required" >&5

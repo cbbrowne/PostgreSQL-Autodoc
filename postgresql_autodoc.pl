@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.113 2003/11/01 23:19:51 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.114 2003/11/14 02:58:54 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
 # Postgres Auto-Doc Version 1.20
@@ -507,7 +507,7 @@ if ($pgversion >= 70300)
 	     , NULL AS tablename
 	     , NULL AS indexname
 	     , NULL AS indexdef
-	 WHERE TRUE = FALSE;
+	 WHERE TRUE = FALSE AND ? = ?;
 	};
 }
 

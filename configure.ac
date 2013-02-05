@@ -1,5 +1,5 @@
 AC_PREREQ(2.53)
-AC_REVISION($Header: /cvsroot/pgsqlautodoc/autodoc/configure.ac,v 1.6 2003/05/14 13:07:01 rtaylor02 Exp $)
+AC_REVISION($Header: /cvsroot/pgsqlautodoc/autodoc/configure.ac,v 1.7 2003/11/08 02:14:53 rtaylor02 Exp $)
 AC_INIT(postgresql_autodoc.pl)
 
 
@@ -41,7 +41,7 @@ AC_SUBST(PERL)
 # Output of if test redirected to /dev/null to keep quiet
 for module in DBI DBD::Pg Fcntl HTML::Template ; do
 	AC_MSG_CHECKING(${module})
-	if ( ! ${PERL} -e "use ${module}" 2>&1 /dev/null ); then
+	if [ ! (${PERL} -e "use ${module}" 2>&1 /dev/null ) ]; then
 		AC_MSG_RESULT(no)
 		AC_MSG_ERROR(Perl module ${module} is required)
 	else
