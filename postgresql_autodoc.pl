@@ -1642,6 +1642,9 @@ sub write_uml_structure {
               <dia:attribute name="value">
                 <dia:string/>
               </dia:attribute>
+               <dia:attribute name="type">
+                 <dia:string>##</dia:string>
+               </dia:attribute>
               <dia:attribute name="kind">
                 <dia:enum val="0"/>
               </dia:attribute>
