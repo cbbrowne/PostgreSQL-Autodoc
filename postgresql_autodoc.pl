@@ -1,9 +1,9 @@
 #!/usr/bin/env perl
 # -- # -*- Perl -*-w
-# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.103 2003/08/02 00:48:06 rtaylor02 Exp $
+# $Header: /cvsroot/pgsqlautodoc/autodoc/postgresql_autodoc.pl,v 1.105 2003/08/11 21:52:45 rtaylor02 Exp $
 #  Imported 1.22 2002/02/08 17:09:48 into sourceforge
 
-# Postgres Auto-Doc Version 1.11
+# Postgres Auto-Doc Version 1.12
 
 # License
 # -------
@@ -1378,6 +1378,11 @@ sub write_using_templates
 	# Loop through each template found in the supplied path. Output the results of the template
 	# as <filename>.<extension> into the current working directory.
 	my @template_files = glob($template_path .'/*.tmpl');
+
+	# Ensure we've told the user if we don't find any files.
+	triggerError("Templates files not found in $template_path") if ($#template_files <= 0);
+
+	# Process all found templates.
 	foreach my $template_file (@template_files) {
 		(my $file_extension = $template_file) =~ s/^(?:.*\/|)([^\/]+)\.tmpl$/$1/;
 		my $output_filename = "$output_filename_base.$file_extension";
